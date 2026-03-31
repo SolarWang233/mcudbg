@@ -36,8 +36,9 @@ class KeilBuildRuntime:
         log_text = self._read_text_if_exists(log_path)
         firmware = self._collect_firmware_info(elf.path)
 
+        build_ok = self._build_succeeded(log_text)
         return {
-            "status": "ok" if completed.returncode == 0 and self._build_succeeded(log_text) else "error",
+            "status": "ok" if build_ok else "error",
             "summary": self._summarize_build(completed.returncode, log_text),
             "command": command,
             "returncode": completed.returncode,
@@ -72,8 +73,9 @@ class KeilBuildRuntime:
         log_text = self._read_text_if_exists(log_path)
         firmware = self._collect_firmware_info(elf.path)
 
+        flash_ok = self._flash_succeeded(log_text)
         return {
-            "status": "ok" if completed.returncode == 0 and self._flash_succeeded(log_text) else "error",
+            "status": "ok" if flash_ok else "error",
             "summary": self._summarize_flash(completed.returncode, log_text),
             "command": command,
             "returncode": completed.returncode,
@@ -118,7 +120,7 @@ class KeilBuildRuntime:
 
     @staticmethod
     def _summarize_build(returncode: int, log_text: str) -> str:
-        if returncode == 0 and "0 Error(s)" in log_text:
+        if "0 Error(s)" in log_text:
             return "Keil batch build completed successfully."
         if not log_text:
             return f"Keil batch build finished with return code {returncode}, but no build log was captured."

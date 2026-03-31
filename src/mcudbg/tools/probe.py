@@ -7,6 +7,10 @@ def connect_probe(session: SessionState, target: str, unique_id: str | None = No
     return session.probe.connect(target=target, unique_id=unique_id)
 
 
+def disconnect_probe(session: SessionState) -> dict:
+    return session.probe.disconnect()
+
+
 def halt_target(session: SessionState) -> dict:
     return session.probe.halt()
 

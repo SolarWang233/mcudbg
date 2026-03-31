@@ -13,8 +13,11 @@ from .tools.configuration import load_demo_profile as _load_demo_profile
 from .tools.diagnose import diagnose_hardfault as _diagnose_hardfault
 from .tools.diagnose import diagnose_startup_failure as _diagnose_startup_failure
 from .tools.logs import connect_log as _connect_log
+from .tools.logs import disconnect_log as _disconnect_log
 from .tools.logs import tail_logs as _tail_logs
+from .tools.lifecycle import disconnect_all as _disconnect_all
 from .tools.probe import connect_probe as _connect_probe
+from .tools.probe import disconnect_probe as _disconnect_probe
 from .tools.probe import halt_target as _halt_target
 from .tools.probe import read_registers as _read_registers
 from .tools.probe import reset_target as _reset_target
@@ -90,6 +93,11 @@ async def probe_connect(target: str, unique_id: str | None = None) -> dict:
 
 
 @mcp.tool()
+async def probe_disconnect() -> dict:
+    return _disconnect_probe(session)
+
+
+@mcp.tool()
 async def probe_halt() -> dict:
     return _halt_target(session)
 
@@ -120,8 +128,18 @@ async def log_connect(port: str, baudrate: int = 115200) -> dict:
 
 
 @mcp.tool()
+async def log_disconnect() -> dict:
+    return _disconnect_log(session)
+
+
+@mcp.tool()
 async def log_tail(line_count: int = 50) -> dict:
     return _tail_logs(session, line_count=line_count)
+
+
+@mcp.tool()
+async def disconnect_all() -> dict:
+    return _disconnect_all(session)
 
 
 @mcp.tool()

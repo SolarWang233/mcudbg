@@ -25,3 +25,77 @@ def test_mock_hardfault_resolves_handler_symbol() -> None:
 
     assert result["diagnosis_type"] == "hardfault_detected"
     assert result["symbol_context"]["pc_symbol"] == "HardFault_Handler"
+
+
+class _HealthyLogBackend:
+    def connect(self, port: str, baudrate: int = 115200) -> dict:
+        return {"status": "ok", "summary": f"Connected healthy mock UART on {port} at {baudrate} baud."}
+
+    def read_recent(self, line_count: int = 50) -> list[str]:
+        return [
+            "boot start",
+            "clock init ok",
+            "uart init ok",
+            "sensor init...",
+            "sensor init ok",
+            "app loop running",
+        ][-line_count:]
+
+
+class _HealthyProbeBackend:
+    def connect(self, target: str, unique_id: str | None = None) -> dict:
+        return {"status": "ok", "summary": f"Connected healthy mock target {target}."}
+
+    def halt(self) -> dict:
+        return {"status": "ok", "summary": "Healthy mock target halted."}
+
+    def read_core_registers(self) -> dict[str, int]:
+        return {
+            "pc": 0x0800237E,
+            "lr": 0x08002351,
+            "sp": 0x2000079C,
+            "xpsr": 0x81000000,
+        }
+
+    def read_fault_registers(self) -> dict[str, int]:
+        return {
+            "cfsr": 0x0,
+            "hfsr": 0x0,
+            "mmfar": 0xE000EDF8,
+            "bfar": 0xE000EDF8,
+            "shcsr": 0x0,
+        }
+
+
+class _HealthyElfManager:
+    is_loaded = True
+
+    def load(self, path: str) -> dict:
+        return {"status": "ok", "summary": f"Loaded healthy mock ELF from {path}."}
+
+    def resolve_address(self, address: int) -> dict:
+        mapping = {
+            0x0800237E: {"symbol": "delay_us", "source": None},
+            0x08002351: {"symbol": "delay_ms", "source": None},
+        }
+        return mapping.get(address, {"symbol": None, "source": None})
+
+
+class _HealthySession:
+    def __init__(self) -> None:
+        self.log = _HealthyLogBackend()
+        self.probe = _HealthyProbeBackend()
+        self.elf = _HealthyElfManager()
+
+
+def test_startup_success_is_reported_when_logs_continue_normally() -> None:
+    session = _HealthySession()
+
+    result = diagnose_startup_failure(session, suspected_stage="sensor init")
+
+    assert result["diagnosis_type"] == "startup_completed_normally"
+    assert result["confidence"] == "high"
+    assert result["startup_context"]["progress_interrupted"] is False
+    assert result["log_context"]["log_stopped_abruptly"] is False
+    assert result["fault"]["fault_detected"] is False
+    assert result["log_context"]["last_meaningful_line"] == "app loop running"

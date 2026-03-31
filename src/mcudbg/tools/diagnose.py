@@ -140,8 +140,13 @@ def diagnose_startup_failure(
     fault_notes = _build_fault_notes(fault_registers, core, pc_symbol, lr_symbol)
     fault_detected = bool(fault_registers.get("cfsr", 0) or fault_registers.get("hfsr", 0))
     stage = suspected_stage or _infer_stage_from_logs(last_meaningful)
+    startup_completed = _logs_indicate_startup_success(log_lines)
 
-    if fault_detected:
+    if startup_completed and not fault_detected:
+        diagnosis_type = "startup_completed_normally"
+        summary = f"Startup completed normally past {stage}."
+        confidence = "high"
+    elif fault_detected:
         diagnosis_type = "startup_failure_with_fault"
         summary = f"Startup likely failed around {stage}, and the target shows a fault condition."
         confidence = "high"
@@ -152,10 +157,15 @@ def diagnose_startup_failure(
 
     evidence = []
     if last_meaningful:
-        evidence.append(f"UART output stops after '{last_meaningful}'.")
+        if startup_completed and not fault_detected:
+            evidence.append(f"UART output continued through '{last_meaningful}'.")
+        else:
+            evidence.append(f"UART output stops after '{last_meaningful}'.")
     if pc_symbol:
         evidence.append(f"Current PC resolves to {pc_symbol}.")
     evidence.append(f"PC={hex(core['pc'])}, LR={hex(core['lr'])}, SP={hex(core['sp'])}.")
+    if startup_completed and not fault_detected:
+        evidence.append("UART logs indicate the application continued past startup.")
     if fault_detected:
         evidence.append(f"Fault registers suggest {fault_class}.")
     if fault_registers.get("hfsr", 0) & 0x40000000:
@@ -164,7 +174,26 @@ def diagnose_startup_failure(
 
     suspected_root_causes = []
     suggested_next_steps = []
-    if fault_detected:
+    if startup_completed and not fault_detected:
+        suspected_root_causes.extend(
+            [
+                RootCauseHint(
+                    label=f"startup has completed beyond {stage}",
+                    confidence="high",
+                ),
+                RootCauseHint(
+                    label="current firmware is running the normal application loop",
+                    confidence="high",
+                ),
+            ]
+        )
+        suggested_next_steps.extend(
+            [
+                "Confirm the application keeps producing the expected runtime logs.",
+                "Optionally reset once more to verify the successful startup path is repeatable.",
+            ]
+        )
+    elif fault_detected:
         suspected_root_causes.extend(
             [
                 RootCauseHint(
@@ -210,7 +239,7 @@ def diagnose_startup_failure(
         "startup_context": {
             "suspected_stage": stage,
             "last_meaningful_log": last_meaningful,
-            "progress_interrupted": bool(last_meaningful),
+            "progress_interrupted": bool(last_meaningful) and not startup_completed,
         },
         "fault": {
             "fault_detected": fault_detected,
@@ -232,7 +261,7 @@ def diagnose_startup_failure(
             included=include_logs,
             last_lines=log_lines,
             last_meaningful_line=last_meaningful,
-            log_stopped_abruptly=bool(last_meaningful),
+            log_stopped_abruptly=bool(last_meaningful) and not startup_completed,
         ).model_dump(),
         "evidence": evidence,
         "suspected_root_causes": [item.model_dump() for item in suspected_root_causes],
@@ -289,6 +318,17 @@ def _infer_stage_from_logs(last_meaningful: str | None) -> str:
     if "init" in normalized:
         return "initialization"
     return "startup"
+
+
+def _logs_indicate_startup_success(log_lines: list[str]) -> bool:
+    success_markers = (
+        "sensor init ok",
+        "app loop running",
+        "startup complete",
+        "boot complete",
+    )
+    normalized_lines = [line.lower() for line in log_lines]
+    return any(marker in line for line in normalized_lines for marker in success_markers)
 
 
 def _build_fault_notes(
