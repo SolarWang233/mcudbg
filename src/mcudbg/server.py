@@ -3,6 +3,8 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 from .session import SessionState
+from .tools.build import build_project as _build_project
+from .tools.build import flash_firmware as _flash_firmware
 from .tools.configuration import configure_target as _configure_target
 from .tools.configuration import connect_with_config as _connect_with_config
 from .tools.configuration import get_runtime_config as _get_runtime_config
@@ -44,6 +46,11 @@ async def configure_target(
     uart_port: str | None = None,
     uart_baudrate: int | None = None,
     elf_path: str | None = None,
+    uv4_path: str | None = None,
+    project_path: str | None = None,
+    target_name: str | None = None,
+    build_log_path: str | None = None,
+    flash_log_path: str | None = None,
     suspected_stage: str | None = None,
 ) -> dict:
     return _configure_target(
@@ -53,6 +60,11 @@ async def configure_target(
         uart_port=uart_port,
         uart_baudrate=uart_baudrate,
         elf_path=elf_path,
+        uv4_path=uv4_path,
+        project_path=project_path,
+        target_name=target_name,
+        build_log_path=build_log_path,
+        flash_log_path=flash_log_path,
         suspected_stage=suspected_stage,
     )
 
@@ -60,6 +72,16 @@ async def configure_target(
 @mcp.tool()
 async def connect_with_config() -> dict:
     return _connect_with_config(session)
+
+
+@mcp.tool()
+async def build_project(timeout_seconds: int = 120) -> dict:
+    return _build_project(session, timeout_seconds=timeout_seconds)
+
+
+@mcp.tool()
+async def flash_firmware(timeout_seconds: int = 120) -> dict:
+    return _flash_firmware(session, timeout_seconds=timeout_seconds)
 
 
 @mcp.tool()

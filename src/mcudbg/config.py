@@ -21,12 +21,22 @@ class ElfConfig(BaseModel):
     path: str | None = None
 
 
+class BuildConfig(BaseModel):
+    backend: str = "keil_uv4"
+    uv4_path: str | None = None
+    project_path: str | None = None
+    target_name: str | None = None
+    build_log_path: str | None = None
+    flash_log_path: str | None = None
+
+
 class DemoProfile(BaseModel):
     name: str
     description: str
     probe: ProbeConfig
     log: LogConfig
     elf: ElfConfig
+    build: BuildConfig = Field(default_factory=BuildConfig)
     suspected_stage: str | None = None
 
 
@@ -35,6 +45,7 @@ class RuntimeConfig(BaseModel):
     probe: ProbeConfig = Field(default_factory=ProbeConfig)
     log: LogConfig = Field(default_factory=LogConfig)
     elf: ElfConfig = Field(default_factory=ElfConfig)
+    build: BuildConfig = Field(default_factory=BuildConfig)
     suspected_stage: str | None = None
 
     def apply_profile(self, profile: DemoProfile) -> None:
@@ -42,6 +53,7 @@ class RuntimeConfig(BaseModel):
         self.probe = profile.probe.model_copy(deep=True)
         self.log = profile.log.model_copy(deep=True)
         self.elf = profile.elf.model_copy(deep=True)
+        self.build = profile.build.model_copy(deep=True)
         self.suspected_stage = profile.suspected_stage
 
 
@@ -67,6 +79,14 @@ def get_builtin_profiles() -> dict[str, DemoProfile]:
             ),
             elf=ElfConfig(
                 path=str(stm32l4_root / "OBJ" / "ATK_LED.axf"),
+            ),
+            build=BuildConfig(
+                backend="keil_uv4",
+                uv4_path=r"E:\software\MDK\UV4\UV4.exe",
+                project_path=str(stm32l4_root / "USER" / "ATK_LED.uvprojx"),
+                target_name="ATK_LED",
+                build_log_path=str(stm32l4_root / "OBJ" / "mcudbg_build.log"),
+                flash_log_path=str(stm32l4_root / "OBJ" / "mcudbg_flash.log"),
             ),
             suspected_stage="sensor init",
         )

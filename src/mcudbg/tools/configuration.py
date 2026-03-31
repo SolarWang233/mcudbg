@@ -48,6 +48,11 @@ def configure_target(
     uart_port: str | None = None,
     uart_baudrate: int | None = None,
     elf_path: str | None = None,
+    uv4_path: str | None = None,
+    project_path: str | None = None,
+    target_name: str | None = None,
+    build_log_path: str | None = None,
+    flash_log_path: str | None = None,
     suspected_stage: str | None = None,
 ) -> dict:
     if target is not None:
@@ -60,6 +65,16 @@ def configure_target(
         session.config.log.baudrate = uart_baudrate
     if elf_path is not None:
         session.config.elf.path = elf_path
+    if uv4_path is not None:
+        session.config.build.uv4_path = uv4_path
+    if project_path is not None:
+        session.config.build.project_path = project_path
+    if target_name is not None:
+        session.config.build.target_name = target_name
+    if build_log_path is not None:
+        session.config.build.build_log_path = build_log_path
+    if flash_log_path is not None:
+        session.config.build.flash_log_path = flash_log_path
     if suspected_stage is not None:
         session.config.suspected_stage = suspected_stage
 
