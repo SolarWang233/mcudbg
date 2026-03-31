@@ -1,0 +1,103 @@
+from __future__ import annotations
+
+from mcp.server.fastmcp import FastMCP
+
+from .session import SessionState
+from .tools.diagnose import diagnose_hardfault as _diagnose_hardfault
+from .tools.diagnose import diagnose_startup_failure as _diagnose_startup_failure
+from .tools.logs import connect_log as _connect_log
+from .tools.logs import tail_logs as _tail_logs
+from .tools.probe import connect_probe as _connect_probe
+from .tools.probe import halt_target as _halt_target
+from .tools.probe import read_registers as _read_registers
+from .tools.probe import reset_target as _reset_target
+from .tools.probe import resume_target as _resume_target
+
+mcp = FastMCP("mcudbg")
+session = SessionState()
+
+
+@mcp.tool()
+async def probe_connect(target: str, unique_id: str | None = None) -> dict:
+    return _connect_probe(session, target=target, unique_id=unique_id)
+
+
+@mcp.tool()
+async def probe_halt() -> dict:
+    return _halt_target(session)
+
+
+@mcp.tool()
+async def probe_resume() -> dict:
+    return _resume_target(session)
+
+
+@mcp.tool()
+async def probe_reset(halt: bool = False) -> dict:
+    return _reset_target(session, halt=halt)
+
+
+@mcp.tool()
+async def probe_read_registers() -> dict:
+    return _read_registers(session)
+
+
+@mcp.tool()
+async def elf_load(path: str) -> dict:
+    return session.elf.load(path)
+
+
+@mcp.tool()
+async def log_connect(port: str, baudrate: int = 115200) -> dict:
+    return _connect_log(session, port=port, baudrate=baudrate)
+
+
+@mcp.tool()
+async def log_tail(line_count: int = 50) -> dict:
+    return _tail_logs(session, line_count=line_count)
+
+
+@mcp.tool()
+async def diagnose_hardfault(
+    auto_halt: bool = True,
+    include_logs: bool = True,
+    log_tail_lines: int = 50,
+    resolve_symbols: bool = True,
+    include_fault_registers: bool = True,
+    include_stack_snapshot: bool = True,
+    stack_snapshot_bytes: int = 64,
+    suspected_stage: str | None = None,
+) -> dict:
+    return _diagnose_hardfault(
+        session,
+        auto_halt=auto_halt,
+        include_logs=include_logs,
+        log_tail_lines=log_tail_lines,
+        resolve_symbols=resolve_symbols,
+        include_fault_registers=include_fault_registers,
+        include_stack_snapshot=include_stack_snapshot,
+        stack_snapshot_bytes=stack_snapshot_bytes,
+        suspected_stage=suspected_stage,
+    )
+
+
+@mcp.tool()
+async def diagnose_startup_failure(
+    auto_halt: bool = True,
+    include_logs: bool = True,
+    log_tail_lines: int = 50,
+    resolve_symbols: bool = True,
+    suspected_stage: str | None = None,
+) -> dict:
+    return _diagnose_startup_failure(
+        session,
+        auto_halt=auto_halt,
+        include_logs=include_logs,
+        log_tail_lines=log_tail_lines,
+        resolve_symbols=resolve_symbols,
+        suspected_stage=suspected_stage,
+    )
+
+
+def main() -> None:
+    mcp.run()
