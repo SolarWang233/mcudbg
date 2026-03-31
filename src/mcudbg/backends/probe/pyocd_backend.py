@@ -12,12 +12,12 @@ except ImportError:  # pragma: no cover
 
 
 class PyOcdProbeBackend(ProbeBackend):
-    """Minimal CMSIS-DAP backend for v0.1."""
+    """Minimal pyOCD probe backend for v0.1."""
 
     def __init__(self) -> None:
         self._session = None
         self._target = None
-        self._probe_name = "cmsis-dap"
+        self._probe_name = "pyocd"
 
     def connect(self, target: str, unique_id: str | None = None) -> dict[str, Any]:
         if ConnectHelper is None:
@@ -31,14 +31,14 @@ class PyOcdProbeBackend(ProbeBackend):
             connect_mode="attach",
         )
         if session is None:
-            raise BackendUnavailableError("no CMSIS-DAP probe could be opened")
+            raise BackendUnavailableError("no supported pyOCD probe could be opened")
 
         session.open()
         self._session = session
         self._target = session.target
         return {
             "status": "ok",
-            "summary": f"Connected to target {target} via CMSIS-DAP.",
+            "summary": f"Connected to target {target} via pyOCD probe backend.",
             "backend": self._probe_name,
             "target": target,
         }

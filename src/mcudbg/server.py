@@ -3,6 +3,11 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 from .session import SessionState
+from .tools.configuration import configure_target as _configure_target
+from .tools.configuration import connect_with_config as _connect_with_config
+from .tools.configuration import get_runtime_config as _get_runtime_config
+from .tools.configuration import list_demo_profiles as _list_demo_profiles
+from .tools.configuration import load_demo_profile as _load_demo_profile
 from .tools.diagnose import diagnose_hardfault as _diagnose_hardfault
 from .tools.diagnose import diagnose_startup_failure as _diagnose_startup_failure
 from .tools.logs import connect_log as _connect_log
@@ -15,6 +20,46 @@ from .tools.probe import resume_target as _resume_target
 
 mcp = FastMCP("mcudbg")
 session = SessionState()
+
+
+@mcp.tool()
+async def get_runtime_config() -> dict:
+    return _get_runtime_config(session)
+
+
+@mcp.tool()
+async def list_demo_profiles() -> dict:
+    return _list_demo_profiles()
+
+
+@mcp.tool()
+async def load_demo_profile(profile_name: str) -> dict:
+    return _load_demo_profile(session, profile_name=profile_name)
+
+
+@mcp.tool()
+async def configure_target(
+    target: str | None = None,
+    unique_id: str | None = None,
+    uart_port: str | None = None,
+    uart_baudrate: int | None = None,
+    elf_path: str | None = None,
+    suspected_stage: str | None = None,
+) -> dict:
+    return _configure_target(
+        session,
+        target=target,
+        unique_id=unique_id,
+        uart_port=uart_port,
+        uart_baudrate=uart_baudrate,
+        elf_path=elf_path,
+        suspected_stage=suspected_stage,
+    )
+
+
+@mcp.tool()
+async def connect_with_config() -> dict:
+    return _connect_with_config(session)
 
 
 @mcp.tool()

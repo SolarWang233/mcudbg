@@ -16,7 +16,8 @@ It is meant for:
 Reference setup:
 
 - target: `STM32L4`
-- probe: `CMSIS-DAP`
+- probe runtime: `pyOCD`
+- current real-hardware probe target: `ST-Link`
 - log channel: `UART`
 - failure pattern: startup log stops at `sensor init...`, then the target enters `HardFault`
 
@@ -53,11 +54,11 @@ User: This STM32L4 board doesn't boot after power-on. Help me inspect it.
   "summary": "Connected mock UART on COM-MOCK at 115200 baud."
 }
 
-[2/4] Connect CMSIS-DAP probe
+[2/4] Connect probe (pyOCD / ST-Link path)
 {
   "status": "ok",
-  "summary": "Connected to mock target stm32l4 via CMSIS-DAP.",
-  "backend": "mock-cmsis-dap",
+  "summary": "Connected to mock target stm32l4 via mock pyOCD probe.",
+  "backend": "mock-pyocd",
   "target": "stm32l4",
   "unique_id": null
 }
@@ -141,7 +142,7 @@ User: This STM32L4 board doesn't boot after power-on. Help me inspect it.
   ],
   "raw_refs": {
     "elf_loaded": true,
-    "probe_backend": "cmsis-dap",
+    "probe_backend": "pyocd",
     "log_backend": "uart"
   }
 }
@@ -221,7 +222,7 @@ HardFault-focused result
   ],
   "raw_refs": {
     "elf_loaded": true,
-    "probe_backend": "cmsis-dap",
+    "probe_backend": "pyocd",
     "log_backend": "uart"
   }
 }
@@ -275,6 +276,6 @@ For a 15 to 30 second GIF:
 Final frame suggestion:
 
 ```text
-AI combined UART + CMSIS-DAP + ELF context
+AI combined UART + probe state + ELF context
 and located a startup-stage HardFault on STM32L4.
 ```

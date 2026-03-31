@@ -49,7 +49,8 @@ The first release is intentionally narrow.
 
 `v0.1` focuses on one useful loop:
 
-- `CMSIS-DAP` as the probe backend
+- `pyOCD` as the probe runtime
+- `ST-Link` as the current real-hardware validation path
 - `UART` as the log backend
 - `STM32L4` as the reference target
 - startup failure and hardfault diagnosis as the primary scenario
@@ -69,7 +70,7 @@ Example flow:
 1. The board boots and prints UART logs.
 2. The log stops at `sensor init...`.
 3. AI reads recent UART output.
-4. AI connects through `CMSIS-DAP`.
+4. AI connects through a `pyOCD`-supported probe.
 5. AI halts the target and reads registers and fault status.
 6. AI loads ELF symbols and resolves the fault location.
 7. AI reports the most likely cause and the next debugging steps.
@@ -96,7 +97,7 @@ Most likely cause: invalid pointer or incorrect register access during startup.
 
 The current repository skeleton already targets these capabilities:
 
-- connect to target through `CMSIS-DAP`
+- connect to target through a `pyOCD`-supported probe
 - halt, resume, and reset target
 - read core registers and fault registers
 - read target memory
@@ -120,6 +121,11 @@ Current implementation lives under:
 
 The planned `v0.1` tool surface is intentionally small:
 
+- `get_runtime_config`
+- `list_demo_profiles`
+- `load_demo_profile`
+- `configure_target`
+- `connect_with_config`
 - `probe_connect`
 - `probe_halt`
 - `probe_resume`
@@ -180,8 +186,8 @@ This repository is in early development.
 Right now the focus is:
 
 - shaping the `v0.1` MCP tool interface
-- implementing the `CMSIS-DAP + UART + ELF` loop
-- preparing a strong first demo on `STM32L4`
+- implementing the `pyOCD + UART + ELF` loop
+- validating the first real board demo with `ST-Link` on `STM32L4`
 
 Supporting documents in this workspace:
 
@@ -190,6 +196,10 @@ Supporting documents in this workspace:
 - [mcudbg-v0.1-demo-and-launch.md](/d:/embed-mcp/mcudbg-v0.1-demo-and-launch.md)
 - [mcudbg-diagnose-hardfault-spec.md](/d:/embed-mcp/mcudbg-diagnose-hardfault-spec.md)
 - [mcudbg-diagnose-startup-failure-spec.md](/d:/embed-mcp/mcudbg/mcudbg-diagnose-startup-failure-spec.md)
+
+Documentation index:
+
+- [docs/README.md](/d:/embed-mcp/mcudbg/docs/README.md)
 
 ---
 
@@ -202,6 +212,22 @@ Planned local workflow:
 ```bash
 pip install -e .
 python -m mcudbg
+```
+
+Planned configuration workflow:
+
+1. load the built-in STM32L4 demo profile
+2. override `COM` port if needed
+3. connect probe, UART, and ELF from one runtime config
+
+Example flow:
+
+```text
+list_demo_profiles
+load_demo_profile("stm32l4_atk_led_demo")
+configure_target(uart_port="COM5")
+connect_with_config()
+diagnose_startup_failure()
 ```
 
 Before the first public release, this README will be expanded with:

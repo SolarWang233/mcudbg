@@ -12,8 +12,8 @@ class MockProbeBackend:
         self._connected = True
         return {
             "status": "ok",
-            "summary": f"Connected to mock target {target} via CMSIS-DAP.",
-            "backend": "mock-cmsis-dap",
+            "summary": f"Connected to mock target {target} via mock pyOCD probe.",
+            "backend": "mock-pyocd",
             "target": target,
             "unique_id": unique_id,
         }

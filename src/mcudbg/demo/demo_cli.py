@@ -18,7 +18,7 @@ def run_demo() -> None:
     print(json.dumps(session.log.connect(port="COM-MOCK", baudrate=115200), indent=2))
     print()
 
-    print("[2/4] Connect CMSIS-DAP probe")
+    print("[2/4] Connect probe (pyOCD / ST-Link path)")
     print(json.dumps(session.probe.connect(target="stm32l4"), indent=2))
     print()
 

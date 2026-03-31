@@ -107,7 +107,7 @@ def diagnose_hardfault(
             "Verify all startup handles are initialized before use.",
             "Check register base addresses used around the fault site.",
         ],
-        raw_refs={"elf_loaded": session.elf.is_loaded, "probe_backend": "cmsis-dap", "log_backend": "uart"},
+        raw_refs={"elf_loaded": session.elf.is_loaded, "probe_backend": "pyocd", "log_backend": "uart"},
     )
     return diagnosis.model_dump()
 
@@ -245,7 +245,7 @@ def diagnose_startup_failure(
         "suggested_next_steps": suggested_next_steps,
         "raw_refs": {
             "elf_loaded": session.elf.is_loaded,
-            "probe_backend": "cmsis-dap",
+            "probe_backend": "pyocd",
             "log_backend": "uart",
         },
     }
