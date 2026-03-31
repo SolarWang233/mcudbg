@@ -40,12 +40,16 @@ The current built-in profile is:
 
 It currently points to:
 
-- target: `stm32l496ve`
+- target: `cortex_m`
 - baudrate: `115200`
 - ELF: [ATK_LED.axf](/d:/embed-mcp/实验1%20跑马灯(RGB)实验/OBJ/ATK_LED.axf)
 - suspected stage: `sensor init`
 
 You will usually only need to override the UART port.
+
+The use of `cortex_m` here is intentional for the current MVP bring-up, because `pyOCD`
+can attach successfully with the generic Cortex-M target even though `stm32l496ve`
+is not present in the built-in target list on this machine.
 
 ---
 

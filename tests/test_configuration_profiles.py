@@ -14,7 +14,7 @@ def test_load_demo_profile_updates_runtime_config() -> None:
 
     assert result["status"] == "ok"
     assert session.config.active_profile == "stm32l4_atk_led_demo"
-    assert session.config.probe.target == "stm32l496ve"
+    assert session.config.probe.target == "cortex_m"
     assert session.config.log.baudrate == 115200
 
 

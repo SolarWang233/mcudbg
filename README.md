@@ -55,6 +55,10 @@ The first release is intentionally narrow.
 - `STM32L4` as the reference target
 - startup failure and hardfault diagnosis as the primary scenario
 
+For the current first real-board validation, the built-in demo profile uses the generic
+`cortex_m` target in `pyOCD`, because `STM32L496VE` is not available in the default built-in
+target list on this machine.
+
 The goal of `v0.1` is to prove one thing:
 
 **AI can already start participating in real board-level fault diagnosis.**

@@ -52,12 +52,13 @@ def get_builtin_profiles() -> dict[str, DemoProfile]:
             name="stm32l4_atk_led_demo",
             description=(
                 "STM32L496VETx startup-failure demo using a pyOCD-supported probe "
-                "(currently validated with ST-Link), UART, "
+                "(currently validated with ST-Link), UART, and the generic "
+                "cortex_m target for first MVP validation, "
                 "and the modified ATK_LED sample."
             ),
             probe=ProbeConfig(
                 backend="pyocd",
-                target="stm32l496ve",
+                target="cortex_m",
             ),
             log=LogConfig(
                 backend="uart",

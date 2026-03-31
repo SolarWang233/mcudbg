@@ -48,6 +48,7 @@ def diagnose_hardfault(
         )
 
     fault_class = _classify_fault(fault_registers)
+    fault_notes = _build_fault_notes(fault_registers, core, pc_symbol, lr_symbol)
     summary_stage = suspected_stage or "startup"
     summary = f"Target entered HardFault shortly after {summary_stage}."
 
@@ -59,6 +60,9 @@ def diagnose_hardfault(
         evidence.append(f"PC resolved to {pc_symbol}.")
     if fault_registers.get("cfsr", 0):
         evidence.append(f"CFSR={hex(fault_registers['cfsr'])} indicates {fault_class}.")
+    if fault_registers.get("hfsr", 0) & 0x40000000:
+        evidence.append("HFSR indicates the fault escalated into HardFault.")
+    evidence.extend(fault_notes["evidence"])
 
     diagnosis = HardFaultDiagnosis(
         status="ok",
@@ -71,6 +75,7 @@ def diagnose_hardfault(
             "fault_handler_active": pc_symbol == "HardFault_Handler",
             "fault_class": fault_class,
             "fault_description": _describe_fault(fault_class),
+            "escalated_to_hardfault": bool(fault_registers.get("hfsr", 0) & 0x40000000),
             "registers": {
                 "pc": hex(core["pc"]),
                 "lr": hex(core["lr"]),
@@ -93,20 +98,9 @@ def diagnose_hardfault(
         stack_snapshot=stack_snapshot,
         evidence=evidence,
         suspected_root_causes=[
-            RootCauseHint(
-                label="invalid pointer dereference during initialization",
-                confidence="high",
-            ),
-            RootCauseHint(
-                label="incorrect peripheral register access",
-                confidence="medium",
-            ),
+            RootCauseHint(**item) for item in fault_notes["root_causes"]
         ],
-        suggested_next_steps=[
-            "Inspect the last memory access in the failing init path.",
-            "Verify all startup handles are initialized before use.",
-            "Check register base addresses used around the fault site.",
-        ],
+        suggested_next_steps=fault_notes["next_steps"],
         raw_refs={"elf_loaded": session.elf.is_loaded, "probe_backend": "pyocd", "log_backend": "uart"},
     )
     return diagnosis.model_dump()
@@ -143,6 +137,7 @@ def diagnose_startup_failure(
         last_meaningful = next((line for line in reversed(log_lines) if line.strip()), None)
 
     fault_class = _classify_fault(fault_registers)
+    fault_notes = _build_fault_notes(fault_registers, core, pc_symbol, lr_symbol)
     fault_detected = bool(fault_registers.get("cfsr", 0) or fault_registers.get("hfsr", 0))
     stage = suspected_stage or _infer_stage_from_logs(last_meaningful)
 
@@ -163,6 +158,9 @@ def diagnose_startup_failure(
     evidence.append(f"PC={hex(core['pc'])}, LR={hex(core['lr'])}, SP={hex(core['sp'])}.")
     if fault_detected:
         evidence.append(f"Fault registers suggest {fault_class}.")
+    if fault_registers.get("hfsr", 0) & 0x40000000:
+        evidence.append("Fault state escalated into HardFault.")
+    evidence.extend(fault_notes["evidence"])
 
     suspected_root_causes = []
     suggested_next_steps = []
@@ -173,17 +171,13 @@ def diagnose_startup_failure(
                     label=f"startup code fault near {stage}",
                     confidence="high",
                 ),
-                RootCauseHint(
-                    label="invalid pointer or register access during initialization",
-                    confidence="medium",
-                ),
+                *[RootCauseHint(**item) for item in fault_notes["root_causes"]],
             ]
         )
         suggested_next_steps.extend(
             [
                 f"Inspect the initialization path around {stage}.",
-                "Check the last memory or register access before the fault.",
-                "Verify all init-time handles, buffers, and register addresses.",
+                *fault_notes["next_steps"],
             ]
         )
     else:
@@ -258,7 +252,9 @@ def _classify_fault(fault_registers: dict[str, int]) -> str:
     if cfsr & 0x00000400:
         return "imprecise_data_bus_error"
     if cfsr & 0x00000001:
-        return "memory_management_fault"
+        return "instruction_access_violation"
+    if cfsr & 0x00000002:
+        return "data_access_violation"
     if cfsr & 0x00010000:
         return "usage_fault"
     if fault_registers.get("hfsr", 0) & 0x40000000:
@@ -270,7 +266,8 @@ def _describe_fault(fault_class: str) -> str:
     descriptions = {
         "precise_data_bus_error": "A precise data bus fault was reported by CFSR.",
         "imprecise_data_bus_error": "An imprecise data bus fault was reported by CFSR.",
-        "memory_management_fault": "A memory management fault was reported by CFSR.",
+        "instruction_access_violation": "An instruction access violation was reported by CFSR.",
+        "data_access_violation": "A data access violation was reported by CFSR.",
         "usage_fault": "A usage fault was reported by CFSR.",
         "forced_hardfault": "A configurable fault escalated into HardFault.",
         "hardfault_handler_entered": "The CPU is currently in HardFault handler.",
@@ -292,3 +289,83 @@ def _infer_stage_from_logs(last_meaningful: str | None) -> str:
     if "init" in normalized:
         return "initialization"
     return "startup"
+
+
+def _build_fault_notes(
+    fault_registers: dict[str, int],
+    core: dict[str, int],
+    pc_symbol: str | None,
+    lr_symbol: str | None,
+) -> dict:
+    cfsr = fault_registers.get("cfsr", 0)
+    notes = {
+        "evidence": [],
+        "root_causes": [],
+        "next_steps": [],
+    }
+
+    if cfsr & 0x00000001:
+        notes["evidence"].append(
+            "CFSR bit 0 indicates an instruction access violation."
+        )
+        notes["root_causes"].append(
+            {
+                "label": "invalid execution target or illegal function entry",
+                "confidence": "high",
+            }
+        )
+        notes["root_causes"].append(
+            {
+                "label": "control flow jumped to an unmapped address during startup",
+                "confidence": "medium",
+            }
+        )
+        notes["next_steps"].extend(
+            [
+                "Resolve the stacked PC/LR values against the ELF symbols.",
+                "Verify whether the failing path uses an invalid function pointer or forced bad entry address.",
+                "Confirm the startup control flow immediately before the fault site.",
+            ]
+        )
+    elif cfsr & 0x00008200:
+        notes["root_causes"].append(
+            {
+                "label": "invalid pointer dereference during initialization",
+                "confidence": "high",
+            }
+        )
+        notes["root_causes"].append(
+            {
+                "label": "incorrect peripheral register access",
+                "confidence": "medium",
+            }
+        )
+        notes["next_steps"].extend(
+            [
+                "Inspect the last memory access in the failing init path.",
+                "Verify all startup handles are initialized before use.",
+                "Check register base addresses used around the fault site.",
+            ]
+        )
+    else:
+        notes["root_causes"].append(
+            {
+                "label": "startup-stage fault with incomplete classification",
+                "confidence": "medium",
+            }
+        )
+        notes["next_steps"].extend(
+            [
+                "Inspect the stacked register frame and resolve PC/LR against the ELF.",
+                "Compare the fault register values with the Cortex-M fault status definitions.",
+            ]
+        )
+
+    if pc_symbol == "HardFault_Handler":
+        notes["evidence"].append("PC currently resolves to HardFault_Handler.")
+    if lr_symbol:
+        notes["evidence"].append(f"LR resolves to {lr_symbol}.")
+    if core.get("pc") == 0xFFFFFFFF:
+        notes["evidence"].append("PC contains 0xFFFFFFFF, which strongly suggests an invalid execution target.")
+
+    return notes
