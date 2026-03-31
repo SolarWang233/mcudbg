@@ -77,38 +77,56 @@ def connect_with_config(session: SessionState) -> dict:
 
     results: dict[str, dict] = {}
     missing = []
+    errors: dict[str, str] = {}
 
     if not target:
         missing.append("probe.target")
     else:
-        results["probe"] = session.probe.connect(
-            target=target,
-            unique_id=session.config.probe.unique_id,
-        )
+        try:
+            results["probe"] = session.probe.connect(
+                target=target,
+                unique_id=session.config.probe.unique_id,
+            )
+        except Exception as exc:
+            errors["probe"] = str(exc)
 
     if not uart_port:
         missing.append("log.port")
     else:
-        results["log"] = session.log.connect(
-            port=uart_port,
-            baudrate=session.config.log.baudrate,
-        )
+        try:
+            results["log"] = session.log.connect(
+                port=uart_port,
+                baudrate=session.config.log.baudrate,
+            )
+        except Exception as exc:
+            errors["log"] = str(exc)
 
     if not elf_path:
         missing.append("elf.path")
     else:
-        results["elf"] = session.elf.load(elf_path)
+        try:
+            results["elf"] = session.elf.load(elf_path)
+        except Exception as exc:
+            errors["elf"] = str(exc)
 
-    status = "ok" if not missing else "partial"
-    summary = (
-        "Connected configured resources."
-        if not missing
-        else f"Connected available configured resources; missing {', '.join(missing)}."
-    )
+    if missing or errors:
+        status = "partial"
+        details = []
+        if missing:
+            details.append(f"missing {', '.join(missing)}")
+        if errors:
+            details.append(
+                "errors: " + ", ".join(f"{name}={message}" for name, message in errors.items())
+            )
+        summary = "Connected available configured resources; " + "; ".join(details) + "."
+    else:
+        status = "ok"
+        summary = "Connected configured resources."
     return {
         "status": status,
         "summary": summary,
         "results": results,
         "missing": missing,
+        "errors": errors,
         "config": session.config.model_dump(),
     }

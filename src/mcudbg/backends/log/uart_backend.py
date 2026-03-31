@@ -22,7 +22,11 @@ class UartLogBackend(LogBackend):
     def connect(self, port: str, baudrate: int = 115200) -> dict:
         if serial is None:
             raise BackendUnavailableError("pyserial is not installed")
+        if self._serial is not None and self._serial.is_open:
+            self._serial.close()
         self._serial = serial.Serial(port=port, baudrate=baudrate, timeout=0.2)
+        self._buffer.clear()
+        self._serial.reset_input_buffer()
         return {
             "status": "ok",
             "summary": f"Connected UART log channel on {port} at {baudrate} baud.",

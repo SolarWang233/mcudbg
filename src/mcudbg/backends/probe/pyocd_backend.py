@@ -23,6 +23,9 @@ class PyOcdProbeBackend(ProbeBackend):
         if ConnectHelper is None:
             raise BackendUnavailableError("pyocd is not installed")
 
+        if self._session is not None:
+            self.disconnect()
+
         session = ConnectHelper.session_with_chosen_probe(
             unique_id=unique_id,
             target_override=target,
