@@ -1,4 +1,4 @@
-"""Phase 3 diagnosis tools — symptom-driven peripheral diagnosis."""
+"""Phase 3 diagnosis tools -- symptom-driven peripheral diagnosis."""
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -30,12 +30,10 @@ def diagnose_peripheral_stuck(
             "summary": "Probe not connected. Call probe_connect or connect_with_config first.",
         }
 
-    # Read peripheral registers via SVD
     periph_result = session.svd.read_peripheral_state(peripheral, session.probe)
     if periph_result["status"] != "ok":
         return periph_result
 
-    # Check RCC clock enable
     rcc_notes = _check_rcc_clock(session, peripheral)
 
     diagnosis = periph_result.get("diagnosis", [])
@@ -58,10 +56,6 @@ def diagnose_peripheral_stuck(
     }
 
 
-# ------------------------------------------------------------------ #
-# Internal helpers
-# ------------------------------------------------------------------ #
-
 def _probe_is_connected(session: SessionState) -> bool:
     """Return True if the probe appears to be connected."""
     try:
@@ -72,17 +66,12 @@ def _probe_is_connected(session: SessionState) -> bool:
 
 
 def _check_rcc_clock(session: SessionState, peripheral_name: str) -> list[str]:
-    """Search SVD RCC registers for the clock-enable bit of *peripheral_name*.
-
-    Looks for a field named ``{PERIPHERAL_NAME}EN`` (case-insensitive) in any
-    RCC register, reads the register from hardware, and reports whether the
-    bit is set.
-    """
+    """Search SVD RCC registers for the clock-enable bit of *peripheral_name*."""
     notes: list[str] = []
 
     rcc = session.svd._peripheral_map.get("RCC")
     if rcc is None:
-        return ["RCC not found in SVD — cannot check clock enable."]
+        return ["RCC not found in SVD -- cannot check clock enable."]
 
     target = peripheral_name.upper() + "EN"
     for reg in (rcc.registers or []):
@@ -97,11 +86,11 @@ def _check_rcc_clock(session: SessionState, peripheral_name: str) -> list[str]:
                 enabled = (value >> field.bit_offset) & mask
                 if enabled:
                     notes.append(
-                        f"RCC clock enabled: {reg.name}.{field.name}=1 ✓"
+                        f"RCC clock enabled: {reg.name}.{field.name}=1"
                     )
                 else:
                     notes.append(
-                        f"RCC clock NOT enabled: {reg.name}.{field.name}=0 — "
+                        f"RCC clock NOT enabled: {reg.name}.{field.name}=0 -- "
                         f"call HAL_RCC_{peripheral_name.upper()}CLK_ENABLE() "
                         f"before initializing the peripheral."
                     )
