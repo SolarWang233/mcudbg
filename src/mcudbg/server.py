@@ -20,6 +20,7 @@ from .tools.svd import svd_load as _svd_load
 from .tools.svd import svd_list_peripherals as _svd_list_peripherals
 from .tools.svd import svd_get_registers as _svd_get_registers
 from .tools.svd import svd_read_peripheral as _svd_read_peripheral
+from .tools.phase3 import diagnose_peripheral_stuck as _diagnose_peripheral_stuck
 from .tools.logs import connect_log as _connect_log
 from .tools.logs import disconnect_log as _disconnect_log
 from .tools.logs import tail_logs as _tail_logs
@@ -280,6 +281,18 @@ async def svd_read_peripheral(peripheral: str) -> dict:
     Example: svd_read_peripheral('USART2')
     """
     return _svd_read_peripheral(session, peripheral=peripheral)
+
+
+@mcp.tool()
+async def diagnose_peripheral_stuck(peripheral: str, symptom: str | None = None) -> dict:
+    """Diagnose why a peripheral is not working.
+
+    Reads peripheral registers (via SVD) and checks RCC clock enable.
+    Common root causes: clock not enabled in RCC, wrong pin AF mode, wrong baud rate.
+    Requires SVD loaded and probe connected.
+    Example: diagnose_peripheral_stuck('USART2', 'no output from TX pin')
+    """
+    return _diagnose_peripheral_stuck(session, peripheral=peripheral, symptom=symptom)
 
 
 @mcp.tool()
