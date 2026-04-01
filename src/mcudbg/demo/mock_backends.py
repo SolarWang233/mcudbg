@@ -7,6 +7,7 @@ class MockProbeBackend:
     def __init__(self) -> None:
         self._connected = False
         self._halted = False
+        self._breakpoints: set[int] = set()
 
     def connect(self, target: str, unique_id: str | None = None) -> dict:
         self._connected = True
@@ -39,6 +40,43 @@ class MockProbeBackend:
         if halt:
             return {"status": "ok", "summary": "Mock target reset and halted."}
         return {"status": "ok", "summary": "Mock target reset."}
+
+    def set_breakpoint(self, address: int) -> dict:
+        self._require_connected()
+        self._breakpoints.add(address)
+        return {"status": "ok", "summary": f"Mock breakpoint set at {hex(address)}.", "address": hex(address)}
+
+    def clear_breakpoint(self, address: int) -> dict:
+        self._require_connected()
+        self._breakpoints.discard(address)
+        return {"status": "ok", "summary": f"Mock breakpoint cleared at {hex(address)}.", "address": hex(address)}
+
+    def clear_all_breakpoints(self) -> dict:
+        self._require_connected()
+        cleared = len(self._breakpoints)
+        self._breakpoints.clear()
+        return {"status": "ok", "summary": f"Cleared {cleared} mock breakpoint(s).", "cleared_count": cleared}
+
+    def continue_target(
+        self,
+        timeout_seconds: float = 5.0,
+        poll_interval_seconds: float = 0.05,
+    ) -> dict:
+        self._require_connected()
+        self._halted = True
+        pc = 0x08001234
+        stop_reason = "breakpoint_hit" if self._breakpoints else "manual_halt"
+        return {
+            "status": "ok",
+            "summary": "Mock target stopped after continue.",
+            "stop_reason": stop_reason,
+            "state": self.get_state(),
+            "pc": hex(pc),
+        }
+
+    def get_state(self) -> str:
+        self._require_connected()
+        return "halted" if self._halted else "running"
 
     def read_core_registers(self) -> dict[str, int]:
         self._require_connected()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from ...errors import BackendUnavailableError
@@ -7,8 +8,10 @@ from .base import ProbeBackend
 
 try:
     from pyocd.core.helpers import ConnectHelper
+    from pyocd.core.target import Target
 except ImportError:  # pragma: no cover
     ConnectHelper = None
+    Target = None
 
 
 class PyOcdProbeBackend(ProbeBackend):
@@ -18,6 +21,7 @@ class PyOcdProbeBackend(ProbeBackend):
         self._session = None
         self._target = None
         self._probe_name = "pyocd"
+        self._breakpoints: set[int] = set()
 
     def connect(self, target: str, unique_id: str | None = None) -> dict[str, Any]:
         if ConnectHelper is None:
@@ -51,6 +55,7 @@ class PyOcdProbeBackend(ProbeBackend):
             self._session.close()
         self._session = None
         self._target = None
+        self._breakpoints.clear()
         return {"status": "ok", "summary": "Disconnected probe session."}
 
     def halt(self) -> dict[str, Any]:
@@ -70,6 +75,82 @@ class PyOcdProbeBackend(ProbeBackend):
             return {"status": "ok", "summary": "Target reset and halted."}
         self._target.reset()
         return {"status": "ok", "summary": "Target reset."}
+
+    def set_breakpoint(self, address: int) -> dict[str, Any]:
+        self._require_target()
+        success = bool(self._target.set_breakpoint(address))
+        if not success:
+            raise BackendUnavailableError(f"failed to set breakpoint at {hex(address)}")
+        self._breakpoints.add(address)
+        return {
+            "status": "ok",
+            "summary": f"Breakpoint set at {hex(address)}.",
+            "address": hex(address),
+        }
+
+    def clear_breakpoint(self, address: int) -> dict[str, Any]:
+        self._require_target()
+        self._target.remove_breakpoint(address)
+        self._breakpoints.discard(address)
+        return {
+            "status": "ok",
+            "summary": f"Breakpoint cleared at {hex(address)}.",
+            "address": hex(address),
+        }
+
+    def clear_all_breakpoints(self) -> dict[str, Any]:
+        self._require_target()
+        for address in list(self._breakpoints):
+            self._target.remove_breakpoint(address)
+        cleared = len(self._breakpoints)
+        self._breakpoints.clear()
+        return {
+            "status": "ok",
+            "summary": f"Cleared {cleared} breakpoint(s).",
+            "cleared_count": cleared,
+        }
+
+    def continue_target(
+        self,
+        timeout_seconds: float = 5.0,
+        poll_interval_seconds: float = 0.05,
+    ) -> dict[str, Any]:
+        self._require_target()
+        self._target.resume()
+
+        deadline = time.monotonic() + timeout_seconds
+        last_state = self._target.get_state()
+        while time.monotonic() < deadline:
+            state = self._target.get_state()
+            last_state = state
+            if Target is not None and state != Target.State.RUNNING:
+                break
+            time.sleep(poll_interval_seconds)
+        else:
+            self._target.halt()
+            core = self.read_core_registers()
+            return {
+                "status": "ok",
+                "summary": "Target did not stop before timeout and was halted for analysis.",
+                "stop_reason": "timeout",
+                "state": self.get_state(),
+                "pc": hex(core["pc"]),
+            }
+
+        core = self.read_core_registers()
+        stop_reason = self._infer_stop_reason(core["pc"], last_state)
+        return {
+            "status": "ok",
+            "summary": "Target stopped after continue.",
+            "stop_reason": stop_reason,
+            "state": self.get_state(),
+            "pc": hex(core["pc"]),
+        }
+
+    def get_state(self) -> str:
+        self._require_target()
+        state = self._target.get_state()
+        return getattr(state, "name", str(state)).lower()
 
     def read_core_registers(self) -> dict[str, int]:
         self._require_target()
@@ -98,3 +179,19 @@ class PyOcdProbeBackend(ProbeBackend):
     def _require_target(self) -> None:
         if self._target is None:
             raise BackendUnavailableError("probe target is not connected")
+
+    def _infer_stop_reason(self, pc: int, state: Any) -> str:
+        if Target is not None and state == Target.State.LOCKUP:
+            return "fault"
+        if self._matches_breakpoint(pc):
+            return "breakpoint_hit"
+        return "manual_halt"
+
+    def _matches_breakpoint(self, pc: int) -> bool:
+        if pc in self._breakpoints:
+            return True
+        if (pc - 2) in self._breakpoints:
+            return True
+        if (pc - 4) in self._breakpoints:
+            return True
+        return False

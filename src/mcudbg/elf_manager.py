@@ -38,6 +38,14 @@ class ElfManager:
             "source": None,
         }
 
+    def resolve_symbol(self, name: str) -> dict[str, Any]:
+        match = next((symbol for symbol in self._symbols if symbol["name"] == name), None)
+        return {
+            "symbol": name,
+            "address": None if match is None else hex(match["address"]),
+            "source": None,
+        }
+
     @property
     def is_loaded(self) -> bool:
         return self._path is not None
@@ -53,7 +61,7 @@ class ElfManager:
                 symbols.append(
                     {
                         "name": symbol.name,
-                        "address": int(symbol["st_value"]),
+                        "address": int(symbol["st_value"]) & ~1,
                         "size": int(symbol["st_size"]),
                     }
                 )

@@ -18,11 +18,16 @@ from .tools.logs import disconnect_log as _disconnect_log
 from .tools.logs import tail_logs as _tail_logs
 from .tools.lifecycle import disconnect_all as _disconnect_all
 from .tools.probe import connect_probe as _connect_probe
+from .tools.probe import continue_target as _continue_target
+from .tools.probe import clear_all_breakpoints as _clear_all_breakpoints
+from .tools.probe import clear_breakpoint as _clear_breakpoint
 from .tools.probe import disconnect_probe as _disconnect_probe
 from .tools.probe import halt_target as _halt_target
 from .tools.probe import read_registers as _read_registers
+from .tools.probe import read_stopped_context as _read_stopped_context
 from .tools.probe import reset_target as _reset_target
 from .tools.probe import resume_target as _resume_target
+from .tools.probe import set_breakpoint as _set_breakpoint
 
 mcp = FastMCP("mcudbg")
 session = SessionState()
@@ -131,6 +136,46 @@ async def probe_resume() -> dict:
 @mcp.tool()
 async def probe_reset(halt: bool = False) -> dict:
     return _reset_target(session, halt=halt)
+
+
+@mcp.tool()
+async def set_breakpoint(symbol: str | None = None, address: int | None = None) -> dict:
+    return _set_breakpoint(session, symbol=symbol, address=address)
+
+
+@mcp.tool()
+async def clear_breakpoint(symbol: str | None = None, address: int | None = None) -> dict:
+    return _clear_breakpoint(session, symbol=symbol, address=address)
+
+
+@mcp.tool()
+async def clear_all_breakpoints() -> dict:
+    return _clear_all_breakpoints(session)
+
+
+@mcp.tool()
+async def continue_target(timeout_seconds: float = 5.0, poll_interval_ms: int = 50) -> dict:
+    return _continue_target(
+        session,
+        timeout_seconds=timeout_seconds,
+        poll_interval_ms=poll_interval_ms,
+    )
+
+
+@mcp.tool()
+async def read_stopped_context(
+    include_fault_registers: bool = True,
+    include_logs: bool = False,
+    log_tail_lines: int = 20,
+    resolve_symbols: bool = True,
+) -> dict:
+    return _read_stopped_context(
+        session,
+        include_fault_registers=include_fault_registers,
+        include_logs=include_logs,
+        log_tail_lines=log_tail_lines,
+        resolve_symbols=resolve_symbols,
+    )
 
 
 @mcp.tool()
