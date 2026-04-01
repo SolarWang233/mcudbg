@@ -10,6 +10,7 @@ from .tools.configuration import connect_with_config as _connect_with_config
 from .tools.configuration import get_runtime_config as _get_runtime_config
 from .tools.configuration import list_demo_profiles as _list_demo_profiles
 from .tools.configuration import load_demo_profile as _load_demo_profile
+from .tools.debug_loop import run_debug_loop as _run_debug_loop
 from .tools.diagnose import diagnose_hardfault as _diagnose_hardfault
 from .tools.diagnose import diagnose_startup_failure as _diagnose_startup_failure
 from .tools.logs import connect_log as _connect_log
@@ -75,6 +76,26 @@ async def configure_target(
 @mcp.tool()
 async def connect_with_config() -> dict:
     return _connect_with_config(session)
+
+
+@mcp.tool()
+async def run_debug_loop(
+    issue_description: str,
+    profile_name: str | None = None,
+    build_before_debug: bool = False,
+    flash_before_debug: bool = False,
+    log_tail_lines: int = 30,
+    suspected_stage: str | None = None,
+) -> dict:
+    return _run_debug_loop(
+        session,
+        issue_description=issue_description,
+        profile_name=profile_name,
+        build_before_debug=build_before_debug,
+        flash_before_debug=flash_before_debug,
+        log_tail_lines=log_tail_lines,
+        suspected_stage=suspected_stage,
+    )
 
 
 @mcp.tool()

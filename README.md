@@ -99,15 +99,18 @@ Most likely cause: invalid pointer or incorrect register access during startup.
 
 ## Current Capabilities
 
-The current repository skeleton already targets these capabilities:
+The current repository already supports this first useful slice:
 
 - connect to target through a `pyOCD`-supported probe
 - halt, resume, and reset target
+- explicitly disconnect probe and UART resources
 - read core registers and fault registers
 - read target memory
 - connect to UART log channel
 - read recent UART logs
 - load ELF symbols
+- batch-build firmware through `Keil UV4`
+- batch-flash firmware through `Keil UV4`
 - diagnose hardfault
 - diagnose startup failure
 
@@ -117,7 +120,97 @@ Current implementation lives under:
 - [src/mcudbg/tools/diagnose.py](/d:/embed-mcp/mcudbg/src/mcudbg/tools/diagnose.py)
 - [src/mcudbg/backends/probe/pyocd_backend.py](/d:/embed-mcp/mcudbg/src/mcudbg/backends/probe/pyocd_backend.py)
 - [src/mcudbg/backends/log/uart_backend.py](/d:/embed-mcp/mcudbg/src/mcudbg/backends/log/uart_backend.py)
+- [src/mcudbg/build_runtime.py](/d:/embed-mcp/mcudbg/src/mcudbg/build_runtime.py)
+- [src/mcudbg/tools/build.py](/d:/embed-mcp/mcudbg/src/mcudbg/tools/build.py)
 - [src/mcudbg/demo/demo_cli.py](/d:/embed-mcp/mcudbg/src/mcudbg/demo/demo_cli.py)
+
+---
+
+## What Works Today
+
+`mcudbg` has now been validated on a real `STM32L496VETx` board with:
+
+- `ST-Link`
+- `pyOCD`
+- `UART`
+- `ELF/AXF`
+- `Keil UV4` batch build
+- `Keil UV4` batch flash download
+
+The currently working loop is:
+
+1. build firmware with `build_project()`
+2. flash firmware with `flash_firmware()`
+3. connect probe, UART, and ELF with `connect_with_config()`
+4. read real board logs with `log_tail()`
+5. diagnose startup failure and hardfault with `diagnose_startup_failure()` and `diagnose_hardfault()`
+6. disconnect probe and UART cleanly with `disconnect_all()`
+
+The repository also now supports a demo-friendly recovery flow:
+
+- faulty firmware returns `startup_failure_with_fault`
+- fixed firmware returns `startup_completed_normally`
+
+This means the project has already crossed the line from mock-only demo to real hardware validation.
+
+---
+
+## Real Hardware Validation
+
+The current first real-board validation was completed on an `STM32L496VETx` startup-fault scenario.
+
+Board-side fault sample:
+
+- startup logs print normally
+- progress reaches `sensor init...`
+- firmware enters `HardFault`
+- UART prints the captured fault context
+
+Representative real UART output:
+
+```text
+boot start
+clock init ok
+uart init ok
+led init ok
+sensor init...
+[HardFault]
+CFSR = 0x00000001
+HFSR = 0x40000000
+```
+
+Representative `mcudbg` diagnosis:
+
+- `startup_failure_with_fault`
+- `hardfault_detected`
+- `instruction_access_violation`
+- `PC -> HardFault_Handler`
+
+The same demo flow was then validated with a fixed firmware variant. After the repair:
+
+```text
+boot start
+clock init ok
+uart init ok
+led init ok
+sensor init...
+sensor init ok
+app loop running
+```
+
+And the resulting diagnosis becomes:
+
+- `startup_completed_normally`
+
+That gives `mcudbg` a real proof loop:
+
+`buggy firmware -> real board fault -> AI diagnosis -> fixed firmware -> real board recovery`
+
+Supporting validation documents:
+
+- [docs/mvp-validation-report.md](/d:/embed-mcp/mcudbg/docs/mvp-validation-report.md)
+- [docs/real-board-expected-diagnosis.md](/d:/embed-mcp/mcudbg/docs/real-board-expected-diagnosis.md)
+- [docs/final-demo-runbook.md](/d:/embed-mcp/mcudbg/docs/final-demo-runbook.md)
 
 ---
 
@@ -130,14 +223,19 @@ The planned `v0.1` tool surface is intentionally small:
 - `load_demo_profile`
 - `configure_target`
 - `connect_with_config`
+- `build_project`
+- `flash_firmware`
 - `probe_connect`
+- `probe_disconnect`
 - `probe_halt`
 - `probe_resume`
 - `probe_reset`
 - `probe_read_registers`
 - `elf_load`
 - `log_connect`
+- `log_disconnect`
 - `log_tail`
+- `disconnect_all`
 - `diagnose_hardfault`
 - `diagnose_startup_failure`
 
@@ -185,13 +283,13 @@ This means a high-level tool like `diagnose_hardfault` matters more than exposin
 
 ## Repository Status
 
-This repository is in early development.
+This repository is still in early development, but the first real hardware loop is already working.
 
 Right now the focus is:
 
-- shaping the `v0.1` MCP tool interface
-- implementing the `pyOCD + UART + ELF` loop
-- validating the first real board demo with `ST-Link` on `STM32L4`
+- stabilizing the `build + flash + diagnose + recover` demo loop
+- improving lifecycle handling around `ST-Link` and UART ownership
+- packaging the first public-facing demo and launch materials
 
 Supporting documents in this workspace:
 
@@ -204,25 +302,30 @@ Supporting documents in this workspace:
 Documentation index:
 
 - [docs/README.md](/d:/embed-mcp/mcudbg/docs/README.md)
+- [docs/demo-script-3min.md](/d:/embed-mcp/mcudbg/docs/demo-script-3min.md)
+- [docs/final-demo-runbook.md](/d:/embed-mcp/mcudbg/docs/final-demo-runbook.md)
+- [docs/recording-preflight-checklist.md](/d:/embed-mcp/mcudbg/docs/recording-preflight-checklist.md)
+- [docs/screenshot-selection-guide.md](/d:/embed-mcp/mcudbg/docs/screenshot-selection-guide.md)
 
 ---
 
 ## Getting Started
 
-The packaging skeleton is already in place, but the project is still under active build-out.
+The project is still under active build-out, but the first real hardware path is already executable.
 
-Planned local workflow:
+Current local workflow:
 
 ```bash
 pip install -e .
 python -m mcudbg
 ```
 
-Planned configuration workflow:
+Current configuration workflow:
 
 1. load the built-in STM32L4 demo profile
 2. override `COM` port if needed
-3. connect probe, UART, and ELF from one runtime config
+3. build and flash if needed
+4. connect probe, UART, and ELF from one runtime config
 
 Example flow:
 
@@ -230,16 +333,25 @@ Example flow:
 list_demo_profiles
 load_demo_profile("stm32l4_atk_led_demo")
 configure_target(uart_port="COM5")
+build_project()
+flash_firmware()
 connect_with_config()
 diagnose_startup_failure()
 ```
 
-Before the first public release, this README will be expanded with:
+For the current real-board demo loop, it is recommended to add `disconnect_all()` before and after a run:
 
-- installation steps
-- MCP config example
-- hardware setup guide
-- demo walkthrough
+```text
+disconnect_all()
+load_demo_profile("stm32l4_atk_led_demo")
+build_project()
+flash_firmware()
+connect_with_config()
+probe_reset()
+log_tail(30)
+diagnose_startup_failure()
+disconnect_all()
+```
 
 For mock-based local output shaping, a demo CLI scaffold is included:
 
