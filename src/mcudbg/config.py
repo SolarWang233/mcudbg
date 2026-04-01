@@ -58,35 +58,31 @@ class RuntimeConfig(BaseModel):
 
 
 def get_builtin_profiles() -> dict[str, DemoProfile]:
-    stm32l4_root = Path(r"d:\embed-mcp\实验1 跑马灯(RGB)实验")
     return {
         "stm32l4_atk_led_demo": DemoProfile(
             name="stm32l4_atk_led_demo",
             description=(
-                "STM32L496VETx startup-failure demo using a pyOCD-supported probe "
-                "(currently validated with ST-Link), UART, and the generic "
-                "cortex_m target for first MVP validation, "
-                "and the modified ATK_LED sample."
+                "STM32L496VETx startup-failure demo. "
+                "Uses pyOCD + ST-Link, UART at 115200, and a Keil UV4 project. "
+                "Override paths to match your local setup before use."
             ),
             probe=ProbeConfig(
                 backend="pyocd",
-                target="cortex_m",
+                target="stm32l496vetx",
             ),
             log=LogConfig(
                 backend="uart",
-                port="COM3",
+                port="COM3",           # override with your actual COM port
                 baudrate=115200,
             ),
             elf=ElfConfig(
-                path=str(stm32l4_root / "OBJ" / "ATK_LED.axf"),
+                path=None,             # set to your .axf/.elf path, e.g. "C:/project/OBJ/firmware.axf"
             ),
             build=BuildConfig(
                 backend="keil_uv4",
-                uv4_path=r"E:\software\MDK\UV4\UV4.exe",
-                project_path=str(stm32l4_root / "USER" / "ATK_LED.uvprojx"),
-                target_name="ATK_LED",
-                build_log_path=str(stm32l4_root / "OBJ" / "mcudbg_build.log"),
-                flash_log_path=str(stm32l4_root / "OBJ" / "mcudbg_flash.log"),
+                uv4_path=None,         # e.g. "C:/Keil_v5/UV4/UV4.exe"
+                project_path=None,     # e.g. "C:/project/USER/firmware.uvprojx"
+                target_name=None,      # Keil target name as shown in the project
             ),
             suspected_stage="sensor init",
         )

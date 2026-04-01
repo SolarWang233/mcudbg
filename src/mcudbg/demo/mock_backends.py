@@ -4,10 +4,22 @@ from __future__ import annotations
 class MockProbeBackend:
     """Deterministic probe backend for demo and local development."""
 
+    @classmethod
+    def enumerate_probes(cls) -> list[dict]:
+        return [
+            {
+                "unique_id": "mock-probe-001",
+                "description": "Mock CMSIS-DAP Probe",
+                "vendor_name": "mcudbg",
+                "product_name": "Mock Probe",
+            }
+        ]
+
     def __init__(self) -> None:
         self._connected = False
         self._halted = False
         self._breakpoints: set[int] = set()
+        self._mock_memory: dict[int, int] = {}
 
     def connect(self, target: str, unique_id: str | None = None) -> dict:
         self._connected = True
@@ -100,8 +112,27 @@ class MockProbeBackend:
     def read_memory(self, address: int, size: int) -> bytes:
         self._require_connected()
         pattern = bytes.fromhex("80 1F 00 20 34 12 00 08 67 45 00 08 AA BB CC DD")
-        data = (pattern * ((size // len(pattern)) + 1))[:size]
-        return data
+        result = bytearray()
+        for i in range(size):
+            addr = address + i
+            if addr in self._mock_memory:
+                result.append(self._mock_memory[addr])
+            else:
+                result.append(pattern[(addr) % len(pattern)])
+        return bytes(result)
+
+    def write_memory(self, address: int, data: bytes) -> None:
+        self._require_connected()
+        for i, byte in enumerate(data):
+            self._mock_memory[address + i] = byte
+
+    def step(self) -> dict:
+        self._require_connected()
+        return {
+            "status": "ok",
+            "summary": "Mock: executed one instruction.",
+            "pc": hex(0x08001238),
+        }
 
     def _require_connected(self) -> None:
         if not self._connected:

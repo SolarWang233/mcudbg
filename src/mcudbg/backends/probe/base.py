@@ -5,6 +5,15 @@ from typing import Any
 
 
 class ProbeBackend(ABC):
+    @classmethod
+    def enumerate_probes(cls) -> list[dict[str, Any]]:
+        """Return a list of connected probes visible to this backend.
+
+        Each entry should contain at minimum 'unique_id' and 'description'.
+        Backends that do not support enumeration may return an empty list.
+        """
+        return []
+
     @abstractmethod
     def connect(self, target: str, unique_id: str | None = None) -> dict[str, Any]:
         raise NotImplementedError
@@ -59,4 +68,12 @@ class ProbeBackend(ABC):
 
     @abstractmethod
     def read_memory(self, address: int, size: int) -> bytes:
+        raise NotImplementedError
+
+    @abstractmethod
+    def write_memory(self, address: int, data: bytes) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def step(self) -> dict[str, Any]:
         raise NotImplementedError

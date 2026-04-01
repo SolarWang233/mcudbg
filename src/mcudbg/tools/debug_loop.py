@@ -6,7 +6,11 @@ from .configuration import connect_with_config, load_demo_profile
 from .diagnose import diagnose_hardfault, diagnose_startup_failure
 from .lifecycle import disconnect_all
 from .logs import tail_logs
+from .probe import clear_all_breakpoints
+from .probe import continue_target
+from .probe import read_stopped_context
 from .probe import reset_target
+from .probe import set_breakpoint
 
 
 def run_debug_loop(
@@ -64,6 +68,14 @@ def run_debug_loop(
             final_diagnosis=connect_result,
         )
 
+    if symptom == "led_not_blinking":
+        breakpoint_result = _run_path_validation(
+            session,
+            symbol="sensor_init",
+            log_tail_lines=log_tail_lines,
+        )
+        actions.extend(breakpoint_result["actions"])
+
     reset_result = reset_target(session, halt=False)
     actions.append({"step": "probe_reset", "result": reset_result})
 
@@ -110,13 +122,13 @@ def run_debug_loop(
 
 def _classify_issue_description(issue_description: str) -> str:
     normalized = issue_description.lower()
-    if "灯" in issue_description or "led" in normalized:
+    if "\u706f" in issue_description or "led" in normalized:
         return "led_not_blinking"
-    if "没日志" in issue_description or "no log" in normalized:
+    if "\u6ca1\u65e5\u5fd7" in issue_description or "no log" in normalized:
         return "no_boot_log"
     if "hardfault" in normalized:
         return "hardfault"
-    if "不启动" in issue_description or "boot" in normalized:
+    if "\u4e0d\u542f\u52a8" in issue_description or "boot" in normalized:
         return "startup_failure"
     return "generic_board_issue"
 
@@ -151,6 +163,41 @@ def _summarize_final_result(
     if diagnosis_type == "startup_failure_with_fault":
         return f"Debug loop for '{issue_description}' found a startup-stage fault."
     return f"Debug loop for '{issue_description}' completed with a partial diagnosis."
+
+
+def _run_path_validation(
+    session: SessionState,
+    symbol: str,
+    log_tail_lines: int,
+) -> dict:
+    actions: list[dict] = []
+
+    set_result = set_breakpoint(session, symbol=symbol)
+    actions.append({"step": "set_breakpoint", "result": set_result})
+
+    reset_halt_result = reset_target(session, halt=True)
+    actions.append({"step": "probe_reset_halt_for_breakpoint", "result": reset_halt_result})
+
+    continue_result = continue_target(
+        session,
+        timeout_seconds=3.0,
+        poll_interval_ms=50,
+    )
+    actions.append({"step": "continue_target", "result": continue_result})
+
+    context_result = read_stopped_context(
+        session,
+        include_fault_registers=True,
+        include_logs=True,
+        log_tail_lines=log_tail_lines,
+        resolve_symbols=True,
+    )
+    actions.append({"step": "read_stopped_context", "result": context_result})
+
+    clear_result = clear_all_breakpoints(session)
+    actions.append({"step": "clear_all_breakpoints", "result": clear_result})
+
+    return {"actions": actions}
 
 
 def _debug_loop_result(

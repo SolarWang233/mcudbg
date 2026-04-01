@@ -1,386 +1,286 @@
 # mcudbg
 
-**AI-native debugging and observability for embedded boards**
+**Let AI debug your embedded board.**
 
-`mcudbg` is a tool layer that helps AI observe, control, and diagnose real embedded boards.
+`mcudbg` is an MCP server that gives AI assistants direct access to embedded hardware — debug probes, UART logs, ELF symbols, and peripheral registers — so AI can observe, diagnose, and help fix real board problems.
 
-The long-term goal is simple:
-
-**Human connects the wires. AI helps understand what the board is doing.**
+> Human connects the wires. AI debugs the board.
 
 ---
 
-## Why mcudbg
+## What It Does
 
-AI is getting good at writing firmware.
-
-But embedded development is rarely blocked only by source code. Real problems often happen on the board:
+Most AI tools stop at writing firmware. Real embedded problems happen on the board:
 
 - no boot log
-- startup crash
-- hardfault
-- dead loop
-- wrong pin state
-- unstable power rail
-- bad timing on the wire
+- startup crash or hardfault
+- peripheral not responding (UART, SPI, I2C, GPIO)
+- firmware stuck in a loop
 
-To be useful in embedded debugging, AI needs more than text context. It needs access to board-side observations and actions.
+`mcudbg` gives AI the tools to actually investigate these problems — not just explain them from code.
 
-`mcudbg` is built for that layer.
-
----
-
-## What It Is
-
-`mcudbg` is not just another probe wrapper.
-
-It is an AI-facing debugging and observability layer for embedded boards. It sits between:
-
-- AI assistants, IDEs, and agents
-- debug probes, log channels, GPIO interfaces, and lab instruments
-
-It turns those hardware interfaces into structured, diagnosis-oriented capabilities that AI can reason over.
-
----
-
-## v0.1 Focus
-
-The first release is intentionally narrow.
-
-`v0.1` focuses on one useful loop:
-
-- `pyOCD` as the probe runtime
-- `ST-Link` as the current real-hardware validation path
-- `UART` as the log backend
-- `STM32L4` as the reference target
-- startup failure and hardfault diagnosis as the primary scenario
-
-For the current first real-board validation, the built-in demo profile uses the generic
-`cortex_m` target in `pyOCD`, because `STM32L496VE` is not available in the default built-in
-target list on this machine.
-
-The goal of `v0.1` is to prove one thing:
-
-**AI can already start participating in real board-level fault diagnosis.**
-
----
-
-## Demo Scenario
-
-The first demo is designed around a reproducible startup-stage failure on an `STM32L4` board.
-
-Example flow:
-
-1. The board boots and prints UART logs.
-2. The log stops at `sensor init...`.
-3. AI reads recent UART output.
-4. AI connects through a `pyOCD`-supported probe.
-5. AI halts the target and reads registers and fault status.
-6. AI loads ELF symbols and resolves the fault location.
-7. AI reports the most likely cause and the next debugging steps.
-
-Example user prompt:
-
-```text
-This STM32L4 board doesn't boot after power-on. Help me inspect it.
 ```
+User: "This STM32L4 board won't boot. Help me find out why."
 
-Example result:
-
-```text
-UART output stops after "sensor init...".
-The target is currently halted in HardFault_Handler.
-Fault registers indicate a precise data bus fault.
-The failing path is likely inside sensor initialization.
-Most likely cause: invalid pointer or incorrect register access during startup.
+AI: reads UART log → halts CPU → reads fault registers →
+    loads ELF symbols → reads USART2 register state →
+    "CR1.UE=0, transmitter disabled — UART was never initialized"
 ```
 
 ---
 
-## Current Capabilities
+## Capabilities
 
-The current repository already supports this first useful slice:
+### Phase 1 — Probe + Log + Fault Diagnosis
+- Connect to target via `pyOCD`-supported probe (ST-Link, CMSIS-DAP, etc.)
+- Halt, resume, reset, step target
+- Read CPU registers and Cortex-M fault registers (CFSR, HFSR, MMFAR, BFAR)
+- Read and write target memory
+- Set and clear breakpoints
+- Load ELF/AXF and resolve PC addresses to function names
+- Connect to UART and tail logs in real time
+- `diagnose_hardfault` — structured fault analysis with evidence
+- `diagnose_startup_failure` — startup stage analysis
 
-- connect to target through a `pyOCD`-supported probe
-- halt, resume, and reset target
-- explicitly disconnect probe and UART resources
-- read core registers and fault registers
-- read target memory
-- connect to UART log channel
-- read recent UART logs
-- load ELF symbols
-- batch-build firmware through `Keil UV4`
-- batch-flash firmware through `Keil UV4`
-- diagnose hardfault
-- diagnose startup failure
-
-Current implementation lives under:
-
-- [src/mcudbg/server.py](/d:/embed-mcp/mcudbg/src/mcudbg/server.py)
-- [src/mcudbg/tools/diagnose.py](/d:/embed-mcp/mcudbg/src/mcudbg/tools/diagnose.py)
-- [src/mcudbg/backends/probe/pyocd_backend.py](/d:/embed-mcp/mcudbg/src/mcudbg/backends/probe/pyocd_backend.py)
-- [src/mcudbg/backends/log/uart_backend.py](/d:/embed-mcp/mcudbg/src/mcudbg/backends/log/uart_backend.py)
-- [src/mcudbg/build_runtime.py](/d:/embed-mcp/mcudbg/src/mcudbg/build_runtime.py)
-- [src/mcudbg/tools/build.py](/d:/embed-mcp/mcudbg/src/mcudbg/tools/build.py)
-- [src/mcudbg/demo/demo_cli.py](/d:/embed-mcp/mcudbg/src/mcudbg/demo/demo_cli.py)
+### Phase 2 — SVD Peripheral Register Inspection
+- Load any CMSIS-SVD file (available in your chip vendor's SDK or Keil MDK pack)
+- `svd_list_peripherals` — list all peripherals defined in the SVD
+- `svd_get_registers` — inspect register layout without touching hardware
+- `svd_read_peripheral` — read all register values from hardware, decoded field by field
+- Automatic diagnosis for UART, SPI, I2C, GPIO peripherals
 
 ---
 
-## What Works Today
+## Quick Example
 
-`mcudbg` has now been validated on a real `STM32L496VETx` board with:
+```
+# AI workflow for "UART not printing anything"
 
-- `ST-Link`
-- `pyOCD`
-- `UART`
-- `ELF/AXF`
-- `Keil UV4` batch build
-- `Keil UV4` batch flash download
+svd_load('/path/to/STM32L4x6.svd')
+svd_read_peripheral('USART2')
 
-The currently working loop is:
-
-1. build firmware with `build_project()`
-2. flash firmware with `flash_firmware()`
-3. connect probe, UART, and ELF with `connect_with_config()`
-4. read real board logs with `log_tail()`
-5. diagnose startup failure and hardfault with `diagnose_startup_failure()` and `diagnose_hardfault()`
-6. disconnect probe and UART cleanly with `disconnect_all()`
-
-The repository also now supports a demo-friendly recovery flow:
-
-- faulty firmware returns `startup_failure_with_fault`
-- fixed firmware returns `startup_completed_normally`
-
-This means the project has already crossed the line from mock-only demo to real hardware validation.
-
----
-
-## Real Hardware Validation
-
-The current first real-board validation was completed on an `STM32L496VETx` startup-fault scenario.
-
-Board-side fault sample:
-
-- startup logs print normally
-- progress reaches `sensor init...`
-- firmware enters `HardFault`
-- UART prints the captured fault context
-
-Representative real UART output:
-
-```text
-boot start
-clock init ok
-uart init ok
-led init ok
-sensor init...
-[HardFault]
-CFSR = 0x00000001
-HFSR = 0x40000000
+# Returns:
+# CR1 = 0x0000  [UE=0, TE=0, RE=0]
+# BRR = 0x0000
+# Diagnosis: "USART is disabled (CR1.UE=0). Enable with CR1.UE=1."
+#            "Transmitter is disabled (CR1.TE=0). No TX output possible."
 ```
 
-Representative `mcudbg` diagnosis:
+---
 
-- `startup_failure_with_fault`
-- `hardfault_detected`
-- `instruction_access_violation`
-- `PC -> HardFault_Handler`
+## Installation
 
-The same demo flow was then validated with a fixed firmware variant. After the repair:
-
-```text
-boot start
-clock init ok
-uart init ok
-led init ok
-sensor init...
-sensor init ok
-app loop running
+```bash
+pip install mcudbg
 ```
 
-And the resulting diagnosis becomes:
+Or from source:
 
-- `startup_completed_normally`
+```bash
+git clone https://github.com/SolarWang233/mcudbg
+cd mcudbg
+pip install -e .
+```
 
-That gives `mcudbg` a real proof loop:
+**Requirements:**
+- Python 3.10+
+- A `pyOCD`-supported debug probe (ST-Link, CMSIS-DAP, J-Link via CMSIS-DAP mode)
+- CMSIS-SVD file for your target chip (for peripheral register inspection)
 
-`buggy firmware -> real board fault -> AI diagnosis -> fixed firmware -> real board recovery`
-
-Supporting validation documents:
-
-- [docs/mvp-validation-report.md](/d:/embed-mcp/mcudbg/docs/mvp-validation-report.md)
-- [docs/real-board-expected-diagnosis.md](/d:/embed-mcp/mcudbg/docs/real-board-expected-diagnosis.md)
-- [docs/final-demo-runbook.md](/d:/embed-mcp/mcudbg/docs/final-demo-runbook.md)
-
----
-
-## MCP Tools In v0.1
-
-The planned `v0.1` tool surface is intentionally small:
-
-- `get_runtime_config`
-- `list_demo_profiles`
-- `load_demo_profile`
-- `configure_target`
-- `connect_with_config`
-- `build_project`
-- `flash_firmware`
-- `probe_connect`
-- `probe_disconnect`
-- `probe_halt`
-- `probe_resume`
-- `probe_reset`
-- `probe_read_registers`
-- `elf_load`
-- `log_connect`
-- `log_disconnect`
-- `log_tail`
-- `disconnect_all`
-- `diagnose_hardfault`
-- `diagnose_startup_failure`
-
-The design priority is not tool count. It is producing useful diagnosis results with clear evidence and next-step suggestions.
+SVD files for STM32 are included in Keil MDK (`<pack>/CMSIS/SVD/`) or available at
+[cmsis-svd-data](https://github.com/posborne/cmsis-svd-data).
 
 ---
 
-## Architecture Direction
+## MCP Configuration
 
-`mcudbg` is planned as a modular system:
+### Claude Desktop (Windows)
 
-- `mcudbg-core`
-- `mcudbg-probe`
-- `mcudbg-log`
-- `mcudbg-io`
-- `mcudbg-bench`
+```json
+{
+  "mcpServers": {
+    "mcudbg": {
+      "command": "python",
+      "args": ["-m", "mcudbg"],
+      "cwd": "C:/path/to/mcudbg"
+    }
+  }
+}
+```
 
-For `v0.1`, only the first useful slice is active:
+### Claude Desktop (macOS / Linux)
 
-- `probe`
-- `log`
-- `ELF`
-- diagnosis-oriented tools
-
-Future versions can expand toward:
-
-- GPIO state inspection
-- simple board control lines
-- voltage and current measurement
-- waveform capture
-- instrument integration
-
----
-
-## Design Principles
-
-- AI-first, not wrapper-first
-- structured results, not raw dumps
-- diagnosis-oriented tools, not only low-level actions
-- narrow first release, broad long-term vision
-
-This means a high-level tool like `diagnose_hardfault` matters more than exposing many isolated commands.
-
----
-
-## Repository Status
-
-This repository is still in early development, but the first real hardware loop is already working.
-
-Right now the focus is:
-
-- stabilizing the `build + flash + diagnose + recover` demo loop
-- improving lifecycle handling around `ST-Link` and UART ownership
-- packaging the first public-facing demo and launch materials
-
-Supporting documents in this workspace:
-
-- [embedded-mcp-product-plan.md](/d:/embed-mcp/embedded-mcp-product-plan.md)
-- [mcudbg-v0.1-mvp-spec.md](/d:/embed-mcp/mcudbg-v0.1-mvp-spec.md)
-- [mcudbg-v0.1-demo-and-launch.md](/d:/embed-mcp/mcudbg-v0.1-demo-and-launch.md)
-- [mcudbg-diagnose-hardfault-spec.md](/d:/embed-mcp/mcudbg-diagnose-hardfault-spec.md)
-- [mcudbg-diagnose-startup-failure-spec.md](/d:/embed-mcp/mcudbg/mcudbg-diagnose-startup-failure-spec.md)
-
-Documentation index:
-
-- [docs/README.md](/d:/embed-mcp/mcudbg/docs/README.md)
-- [docs/demo-script-3min.md](/d:/embed-mcp/mcudbg/docs/demo-script-3min.md)
-- [docs/final-demo-runbook.md](/d:/embed-mcp/mcudbg/docs/final-demo-runbook.md)
-- [docs/recording-preflight-checklist.md](/d:/embed-mcp/mcudbg/docs/recording-preflight-checklist.md)
-- [docs/screenshot-selection-guide.md](/d:/embed-mcp/mcudbg/docs/screenshot-selection-guide.md)
+```json
+{
+  "mcpServers": {
+    "mcudbg": {
+      "command": "python3",
+      "args": ["-m", "mcudbg"],
+      "cwd": "/path/to/mcudbg"
+    }
+  }
+}
+```
 
 ---
 
 ## Getting Started
 
-The project is still under active build-out, but the first real hardware path is already executable.
+### 1. Load a demo profile (optional)
 
-Current local workflow:
-
-```bash
-pip install -e .
-python -m mcudbg
+```
+list_demo_profiles()
+load_demo_profile("stm32l4_atk_led_demo")
 ```
 
-Current configuration workflow:
+### 2. Configure manually
 
-1. load the built-in STM32L4 demo profile
-2. override `COM` port if needed
-3. build and flash if needed
-4. connect probe, UART, and ELF from one runtime config
-
-Example flow:
-
-```text
-list_demo_profiles
-load_demo_profile("stm32l4_atk_led_demo")
-configure_target(uart_port="COM5")
-build_project()
-flash_firmware()
+```
+configure_probe(target="stm32l496vetx")
+configure_log(uart_port="COM5", uart_baudrate=115200)
+configure_elf(elf_path="/path/to/firmware.axf")
 connect_with_config()
-diagnose_startup_failure()
 ```
 
-For the current real-board demo loop, it is recommended to add `disconnect_all()` before and after a run:
+### 3. Diagnose a startup failure
 
-```text
-disconnect_all()
-load_demo_profile("stm32l4_atk_led_demo")
-build_project()
-flash_firmware()
-connect_with_config()
-probe_reset()
+```
 log_tail(30)
 diagnose_startup_failure()
-disconnect_all()
 ```
 
-For mock-based local output shaping, a demo CLI scaffold is included:
+### 4. Inspect a peripheral
 
-```bash
-python -m mcudbg.demo.demo_cli
+```
+svd_load('/path/to/STM32L4x6.svd')
+svd_read_peripheral('USART2')
+svd_read_peripheral('GPIOA')
 ```
 
-It uses deterministic mock probe, log, and ELF backends so the diagnosis output
-can be reviewed before hardware integration is fully ready.
+### 5. Full hardfault investigation
+
+```
+connect_with_config()
+probe_halt()
+diagnose_hardfault()
+svd_read_peripheral('USART1')
+```
 
 ---
 
-## Long-Term Vision
+## MCP Tools Reference
 
-Today, most AI tools stop at writing firmware.
+### Configuration
+| Tool | Description |
+|------|-------------|
+| `configure_probe` | Set probe target and unique ID |
+| `configure_log` | Set UART port and baudrate |
+| `configure_elf` | Set ELF/AXF file path |
+| `configure_build` | Set Keil UV4 build parameters |
+| `connect_with_config` | Connect all configured resources at once |
+| `get_runtime_config` | Show current configuration |
 
-`mcudbg` is built around the idea that the next step is helping AI debug real boards:
+### Probe Control
+| Tool | Description |
+|------|-------------|
+| `list_connected_probes` | List all connected debug probes |
+| `probe_connect` | Connect to target |
+| `probe_disconnect` | Disconnect probe |
+| `probe_halt` | Halt target |
+| `probe_resume` | Resume target |
+| `probe_reset` | Reset target |
+| `probe_step` | Execute one instruction |
+| `probe_read_registers` | Read all CPU registers |
+| `probe_write_memory` | Write bytes to target memory |
+| `continue_target` | Resume and wait for halt (with timeout) |
+| `read_stopped_context` | Read registers + fault state when halted |
+| `set_breakpoint` | Set breakpoint by symbol or address |
+| `clear_breakpoint` | Clear a breakpoint |
+| `clear_all_breakpoints` | Clear all breakpoints |
 
-- read logs
-- inspect debug state
-- inspect board signals
-- inspect voltage and waveform data
-- combine evidence across tools
-- explain what is most likely wrong
+### Logs
+| Tool | Description |
+|------|-------------|
+| `log_connect` | Connect to UART log channel |
+| `log_disconnect` | Disconnect log |
+| `log_tail` | Read recent log lines |
 
-That is the direction this project is trying to define.
+### ELF Symbols
+| Tool | Description |
+|------|-------------|
+| `elf_load` | Load ELF/AXF for symbol resolution |
+
+### SVD Peripheral Registers
+| Tool | Description |
+|------|-------------|
+| `svd_load` | Load a CMSIS-SVD file |
+| `svd_list_peripherals` | List all peripherals in the SVD |
+| `svd_get_registers` | Get register layout (no hardware read) |
+| `svd_read_peripheral` | Read register values + field decode + diagnosis |
+
+### Diagnosis
+| Tool | Description |
+|------|-------------|
+| `diagnose_hardfault` | Full Cortex-M hardfault analysis |
+| `diagnose_startup_failure` | Startup stage analysis |
+| `run_debug_loop` | AI-driven multi-step debug loop |
+
+### Build & Flash (Keil UV4)
+| Tool | Description |
+|------|-------------|
+| `build_project` | Build firmware via Keil UV4 |
+| `flash_firmware` | Flash firmware via Keil UV4 |
+
+### Lifecycle
+| Tool | Description |
+|------|-------------|
+| `disconnect_all` | Cleanly disconnect all resources |
 
 ---
 
-## Closing Line
+## Validated Hardware
 
-**AI should not stop at writing firmware. It should help debug the board too.**
+| Component | Details |
+|-----------|---------|
+| Target | STM32L496VETx |
+| Probe | ST-Link (via pyOCD) |
+| Log | UART 115200 baud |
+| SVD | STM32L4x6.svd (Keil STM32L4xx_DFP pack) |
+
+Other `pyOCD`-supported targets (STM32F4, RP2040, nRF52, etc.) should work but are untested.
+
+---
+
+## Known Limitations
+
+- **Probe backend**: only `pyOCD` is supported. JLink and OpenOCD backends are planned.
+- **Build and flash**: `build_project` / `flash_firmware` require **Keil UV4** on Windows. Other toolchains (CMake/GCC/IAR) are planned.
+- **Log channel**: only UART is supported. RTT support is planned.
+- **SVD**: user must provide the SVD file for their chip. Files are not bundled.
+
+---
+
+## Roadmap
+
+| Phase | Status | Description |
+|-------|--------|-------------|
+| 1 | ✅ Done | Probe + UART log + ELF + hardfault/startup diagnosis |
+| 2 | ✅ Done | SVD peripheral register inspection and auto-diagnosis |
+| 3 | Planned | Symptom-driven general diagnosis (peripheral stuck, interrupt issues, memory corruption) |
+| 4 | Planned | Full closed loop — diagnose → edit code → build → flash → verify |
+| 5 | Planned | DWARF deep debug — local variables, call stack |
+| 6 | Planned | Board-level observation — GPIO, voltage, waveforms |
+
+---
+
+## Contributing
+
+Issues and PRs are welcome.
+
+If you test on a target other than STM32L4, please open an issue with your results — expanding validated hardware coverage is a priority.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE)

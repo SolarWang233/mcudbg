@@ -32,6 +32,7 @@ class _HealthyLogBackend:
 class _HealthyProbeBackend:
     def __init__(self) -> None:
         self._connected = False
+        self._breakpoints: set[int] = set()
 
     def connect(self, target: str, unique_id: str | None = None) -> dict:
         self._connected = True
@@ -46,6 +47,31 @@ class _HealthyProbeBackend:
 
     def reset(self, halt: bool = False) -> dict:
         return {"status": "ok", "summary": "Healthy mock target reset."}
+
+    def set_breakpoint(self, address: int) -> dict:
+        self._breakpoints.add(address)
+        return {"status": "ok", "summary": f"Breakpoint set at {hex(address)}.", "address": hex(address)}
+
+    def clear_breakpoint(self, address: int) -> dict:
+        self._breakpoints.discard(address)
+        return {"status": "ok", "summary": f"Breakpoint cleared at {hex(address)}.", "address": hex(address)}
+
+    def clear_all_breakpoints(self) -> dict:
+        cleared = len(self._breakpoints)
+        self._breakpoints.clear()
+        return {"status": "ok", "summary": f"Cleared {cleared} breakpoint(s).", "cleared_count": cleared}
+
+    def continue_target(self, timeout_seconds: float = 5.0, poll_interval_seconds: float = 0.05) -> dict:
+        return {
+            "status": "ok",
+            "summary": "Target stopped after continue.",
+            "stop_reason": "breakpoint_hit",
+            "state": self.get_state(),
+            "pc": "0x8002400",
+        }
+
+    def get_state(self) -> str:
+        return "halted"
 
     def read_core_registers(self) -> dict[str, int]:
         return {
@@ -75,8 +101,15 @@ class _HealthyElfManager:
         mapping = {
             0x0800237E: {"symbol": "delay_us", "source": None},
             0x08002351: {"symbol": "delay_ms", "source": None},
+            0x08002400: {"symbol": "sensor_init", "source": None},
         }
         return mapping.get(address, {"symbol": None, "source": None})
+
+    def resolve_symbol(self, name: str) -> dict:
+        mapping = {
+            "sensor_init": {"symbol": "sensor_init", "address": "0x8002400", "source": None},
+        }
+        return mapping.get(name, {"symbol": name, "address": None, "source": None})
 
 
 class _HealthyBuildRuntime:
@@ -116,6 +149,9 @@ def test_run_debug_loop_returns_hardfault_path_for_led_not_blinking() -> None:
     assert result["status"] == "ok"
     assert result["symptom_class"] == "led_not_blinking"
     assert result["final_diagnosis"]["diagnosis_type"] == "hardfault_detected"
+    assert any(action["step"] == "set_breakpoint" for action in result["actions"])
+    assert any(action["step"] == "continue_target" for action in result["actions"])
+    assert any(action["step"] == "read_stopped_context" for action in result["actions"])
 
 
 def test_run_debug_loop_returns_successful_startup_when_logs_are_healthy() -> None:
@@ -130,3 +166,4 @@ def test_run_debug_loop_returns_successful_startup_when_logs_are_healthy() -> No
 
     assert result["status"] == "ok"
     assert result["final_diagnosis"]["diagnosis_type"] == "startup_completed_normally"
+    assert any(action["step"] == "set_breakpoint" for action in result["actions"])

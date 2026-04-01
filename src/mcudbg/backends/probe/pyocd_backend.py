@@ -17,6 +17,24 @@ except ImportError:  # pragma: no cover
 class PyOcdProbeBackend(ProbeBackend):
     """Minimal pyOCD probe backend for v0.1."""
 
+    @classmethod
+    def enumerate_probes(cls) -> list[dict]:
+        if ConnectHelper is None:
+            return []
+        try:
+            probes = ConnectHelper.get_all_connected_probes(blocking=False)
+            return [
+                {
+                    "unique_id": probe.unique_id,
+                    "description": probe.description,
+                    "vendor_name": getattr(probe, "vendor_name", None),
+                    "product_name": getattr(probe, "product_name", None),
+                }
+                for probe in probes
+            ]
+        except Exception:
+            return []
+
     def __init__(self) -> None:
         self._session = None
         self._target = None
@@ -175,6 +193,21 @@ class PyOcdProbeBackend(ProbeBackend):
         self._require_target()
         data = self._target.read_memory_block8(address, size)
         return bytes(data)
+
+    def write_memory(self, address: int, data: bytes) -> None:
+        self._require_target()
+        self._target.write_memory_block8(address, list(data))
+
+    def step(self) -> dict[str, Any]:
+        self._require_target()
+        self._target.step()
+        core = self.read_core_registers()
+        result: dict[str, Any] = {
+            "status": "ok",
+            "summary": "Executed one instruction.",
+            "pc": hex(core["pc"]),
+        }
+        return result
 
     def _require_target(self) -> None:
         if self._target is None:

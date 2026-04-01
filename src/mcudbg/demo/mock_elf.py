@@ -25,6 +25,18 @@ class MockElfManager:
             "source": result["source"],
         }
 
+    def resolve_symbol(self, name: str) -> dict:
+        mapping = {
+            "HardFault_Handler": {"address": "0x8001234", "source": {"file": "src/startup_stm32l4xx.s", "line": 121}},
+            "sensor_init": {"address": "0x8004567", "source": {"file": "src/sensor.c", "line": 84}},
+        }
+        result = mapping.get(name, {"address": None, "source": None})
+        return {
+            "symbol": name,
+            "address": result["address"],
+            "source": result["source"],
+        }
+
     @property
     def is_loaded(self) -> bool:
         return self._loaded

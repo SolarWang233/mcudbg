@@ -30,3 +30,9 @@ dist/
 # OS
 Thumbs.db
 .DS_Store
+
+# Claude Code
+.claude/
+skills-lock.json
+
+.agents/

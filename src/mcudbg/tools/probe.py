@@ -3,6 +3,17 @@ from __future__ import annotations
 from ..session import SessionState
 
 
+def list_connected_probes(session: SessionState) -> dict:
+    probes = session.probe.enumerate_probes()
+    return {
+        "status": "ok",
+        "summary": f"Found {len(probes)} connected probe(s).",
+        "probes": probes,
+        "hint": "Use 'unique_id' from this list with probe_connect() to target a specific probe."
+        if probes else "No probes detected. Check USB connection and driver installation.",
+    }
+
+
 def connect_probe(session: SessionState, target: str, unique_id: str | None = None) -> dict:
     return session.probe.connect(target=target, unique_id=unique_id)
 
@@ -127,6 +138,27 @@ def read_stopped_context(
             "last_lines": log_lines,
             "last_meaningful_line": last_meaningful,
         },
+    }
+
+
+def step_instruction(session: SessionState) -> dict:
+    result = session.probe.step()
+    pc_hex = result.get("pc")
+    if pc_hex and session.elf.is_loaded:
+        resolved = session.elf.resolve_address(int(pc_hex, 16))
+        result["symbol"] = resolved["symbol"]
+        result["source"] = resolved["source"]
+    return result
+
+
+def write_memory(session: SessionState, address: int, data: list[int]) -> dict:
+    raw = bytes(data)
+    session.probe.write_memory(address, raw)
+    return {
+        "status": "ok",
+        "summary": f"Wrote {len(raw)} byte(s) to {hex(address)}.",
+        "address": hex(address),
+        "length": len(raw),
     }
 
 
