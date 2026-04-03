@@ -37,11 +37,6 @@ class StackSnapshot(BaseModel):
     data_hex: str | None = None
 
 
-class RootCauseHint(BaseModel):
-    label: str
-    confidence: str
-
-
 class HardFaultDiagnosis(BaseModel):
     status: str
     diagnosis_type: str
@@ -53,6 +48,4 @@ class HardFaultDiagnosis(BaseModel):
     log_context: LogContext
     stack_snapshot: StackSnapshot
     evidence: list[str] = Field(default_factory=list)
-    suspected_root_causes: list[RootCauseHint] = Field(default_factory=list)
-    suggested_next_steps: list[str] = Field(default_factory=list)
     raw_refs: dict[str, Any] = Field(default_factory=dict)

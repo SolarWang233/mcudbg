@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..models.diagnostics import HardFaultDiagnosis, LogContext, RootCauseHint, StackSnapshot, SymbolContext
+from ..models.diagnostics import HardFaultDiagnosis, LogContext, StackSnapshot, SymbolContext
 from ..session import SessionState
 
 
@@ -48,21 +48,79 @@ def diagnose_hardfault(
         )
 
     fault_class = _classify_fault(fault_registers)
-    fault_notes = _build_fault_notes(fault_registers, core, pc_symbol, lr_symbol)
     summary_stage = suspected_stage or "startup"
     summary = f"Target entered HardFault shortly after {summary_stage}."
 
-    evidence = []
+    cfsr = fault_registers.get("cfsr", 0)
+    hfsr = fault_registers.get("hfsr", 0)
+    mmfar = fault_registers.get("mmfar", 0)
+    bfar = fault_registers.get("bfar", 0)
+    shcsr = fault_registers.get("shcsr", 0)
+
+    evidence: list[str] = []
     if last_meaningful:
-        evidence.append(f"UART output stopped after '{last_meaningful}'.")
-    evidence.append(f"PC={hex(core['pc'])}, LR={hex(core['lr'])}, SP={hex(core['sp'])}.")
+        evidence.append(f"Last meaningful UART line = '{last_meaningful}'.")
+    evidence.append(f"PC = {hex(core['pc'])}" + (f" ({pc_symbol})" if pc_symbol else "") + ".")
+    evidence.append(f"LR = {hex(core['lr'])}" + (f" ({lr_symbol})" if lr_symbol else "") + ".")
+    evidence.append(f"SP = {hex(core['sp'])}.")
+    evidence.append(f"xPSR = {hex(core['xpsr'])}.")
+    if source:
+        evidence.append(f"Source = {source}.")
+    evidence.append(f"CFSR = {hex(cfsr)}.")
+    evidence.append(f"HFSR = {hex(hfsr)}.")
+    evidence.append(f"MMFAR = {hex(mmfar)}.")
+    evidence.append(f"BFAR = {hex(bfar)}.")
+    evidence.append(f"SHCSR = {hex(shcsr)}.")
     if pc_symbol:
-        evidence.append(f"PC resolved to {pc_symbol}.")
-    if fault_registers.get("cfsr", 0):
-        evidence.append(f"CFSR={hex(fault_registers['cfsr'])} indicates {fault_class}.")
-    if fault_registers.get("hfsr", 0) & 0x40000000:
-        evidence.append("HFSR indicates the fault escalated into HardFault.")
-    evidence.extend(fault_notes["evidence"])
+        evidence.append(f"PC symbol = {pc_symbol}.")
+    if lr_symbol:
+        evidence.append(f"LR symbol = {lr_symbol}.")
+    if cfsr & 0x00000001:
+        evidence.append("CFSR IACCVIOL bit set.")
+    if cfsr & 0x00000002:
+        evidence.append("CFSR DACCVIOL bit set.")
+    if cfsr & 0x00000008:
+        evidence.append("CFSR MUNSTKERR bit set.")
+    if cfsr & 0x00000010:
+        evidence.append("CFSR MSTKERR bit set.")
+    if cfsr & 0x00000020:
+        evidence.append("CFSR MLSPERR bit set.")
+    if cfsr & 0x00000080:
+        evidence.append(f"CFSR MMARVALID bit set, MMFAR = {hex(mmfar)}.")
+    if cfsr & 0x00000100:
+        evidence.append("CFSR IBUSERR bit set.")
+    if cfsr & 0x00000200:
+        evidence.append("CFSR PRECISERR bit set.")
+    if cfsr & 0x00000400:
+        evidence.append("CFSR IMPRECISERR bit set.")
+    if cfsr & 0x00000800:
+        evidence.append("CFSR UNSTKERR bit set.")
+    if cfsr & 0x00001000:
+        evidence.append("CFSR STKERR bit set.")
+    if cfsr & 0x00002000:
+        evidence.append("CFSR LSPERR bit set.")
+    if cfsr & 0x00008000:
+        evidence.append(f"CFSR BFARVALID bit set, BFAR = {hex(bfar)}.")
+    if cfsr & 0x00010000:
+        evidence.append("CFSR UNDEFINSTR bit set.")
+    if cfsr & 0x00020000:
+        evidence.append("CFSR INVSTATE bit set.")
+    if cfsr & 0x00040000:
+        evidence.append("CFSR INVPC bit set.")
+    if cfsr & 0x00080000:
+        evidence.append("CFSR NOCP bit set.")
+    if cfsr & 0x01000000:
+        evidence.append("CFSR UNALIGNED bit set.")
+    if cfsr & 0x02000000:
+        evidence.append("CFSR DIVBYZERO bit set.")
+    if hfsr & 0x00000002:
+        evidence.append("HFSR VECTTBL bit set.")
+    if hfsr & 0x40000000:
+        evidence.append("HFSR FORCED bit set.")
+    if pc_symbol == "HardFault_Handler":
+        evidence.append("PC resolves to HardFault_Handler.")
+    if core.get("pc") == 0xFFFFFFFF:
+        evidence.append("PC = 0xffffffff.")
 
     diagnosis = HardFaultDiagnosis(
         status="ok",
@@ -75,7 +133,7 @@ def diagnose_hardfault(
             "fault_handler_active": pc_symbol == "HardFault_Handler",
             "fault_class": fault_class,
             "fault_description": _describe_fault(fault_class),
-            "escalated_to_hardfault": bool(fault_registers.get("hfsr", 0) & 0x40000000),
+            "escalated_to_hardfault": bool(hfsr & 0x40000000),
             "registers": {
                 "pc": hex(core["pc"]),
                 "lr": hex(core["lr"]),
@@ -97,10 +155,6 @@ def diagnose_hardfault(
         ),
         stack_snapshot=stack_snapshot,
         evidence=evidence,
-        suspected_root_causes=[
-            RootCauseHint(**item) for item in fault_notes["root_causes"]
-        ],
-        suggested_next_steps=fault_notes["next_steps"],
         raw_refs={"elf_loaded": session.elf.is_loaded, "probe_backend": "pyocd", "log_backend": "uart"},
     )
     return diagnosis.model_dump()
@@ -118,6 +172,12 @@ def diagnose_startup_failure(
         session.probe.halt()
 
     core = session.probe.read_core_registers()
+    pc_samples = [core["pc"]]
+    for _ in range(2):
+        try:
+            pc_samples.append(session.probe.read_core_registers()["pc"])
+        except Exception:
+            break
     fault_registers = session.probe.read_fault_registers()
 
     pc_symbol = None
@@ -137,7 +197,6 @@ def diagnose_startup_failure(
         last_meaningful = next((line for line in reversed(log_lines) if line.strip()), None)
 
     fault_class = _classify_fault(fault_registers)
-    fault_notes = _build_fault_notes(fault_registers, core, pc_symbol, lr_symbol)
     fault_detected = bool(fault_registers.get("cfsr", 0) or fault_registers.get("hfsr", 0))
     stage = suspected_stage or _infer_stage_from_logs(last_meaningful)
     startup_completed = _logs_indicate_startup_success(log_lines)
@@ -148,87 +207,70 @@ def diagnose_startup_failure(
         confidence = "high"
     elif fault_detected:
         diagnosis_type = "startup_failure_with_fault"
-        summary = f"Startup likely failed around {stage}, and the target shows a fault condition."
+        summary = f"Startup stopped around {stage} with fault registers set."
         confidence = "high"
     else:
         diagnosis_type = "startup_failure_no_fault_confirmed"
-        summary = f"Startup appears to stop around {stage}, but no definitive fault was confirmed."
+        summary = f"Startup appears to stop around {stage} without a confirmed fault."
         confidence = "medium"
 
-    evidence = []
-    if last_meaningful:
-        if startup_completed and not fault_detected:
-            evidence.append(f"UART output continued through '{last_meaningful}'.")
-        else:
-            evidence.append(f"UART output stops after '{last_meaningful}'.")
-    if pc_symbol:
-        evidence.append(f"Current PC resolves to {pc_symbol}.")
-    evidence.append(f"PC={hex(core['pc'])}, LR={hex(core['lr'])}, SP={hex(core['sp'])}.")
-    if startup_completed and not fault_detected:
-        evidence.append("UART logs indicate the application continued past startup.")
-    if fault_detected:
-        evidence.append(f"Fault registers suggest {fault_class}.")
-    if fault_registers.get("hfsr", 0) & 0x40000000:
-        evidence.append("Fault state escalated into HardFault.")
-    evidence.extend(fault_notes["evidence"])
+    cfsr = fault_registers.get("cfsr", 0)
+    hfsr = fault_registers.get("hfsr", 0)
+    mmfar = fault_registers.get("mmfar", 0)
+    bfar = fault_registers.get("bfar", 0)
+    ipsr = core["xpsr"] & 0x1FF
 
-    suspected_root_causes = []
-    suggested_next_steps = []
-    if startup_completed and not fault_detected:
-        suspected_root_causes.extend(
-            [
-                RootCauseHint(
-                    label=f"startup has completed beyond {stage}",
-                    confidence="high",
-                ),
-                RootCauseHint(
-                    label="current firmware is running the normal application loop",
-                    confidence="high",
-                ),
-            ]
-        )
-        suggested_next_steps.extend(
-            [
-                "Confirm the application keeps producing the expected runtime logs.",
-                "Optionally reset once more to verify the successful startup path is repeatable.",
-            ]
-        )
-    elif fault_detected:
-        suspected_root_causes.extend(
-            [
-                RootCauseHint(
-                    label=f"startup code fault near {stage}",
-                    confidence="high",
-                ),
-                *[RootCauseHint(**item) for item in fault_notes["root_causes"]],
-            ]
-        )
-        suggested_next_steps.extend(
-            [
-                f"Inspect the initialization path around {stage}.",
-                *fault_notes["next_steps"],
-            ]
-        )
+    evidence: list[str] = []
+    if last_meaningful:
+        evidence.append(f"Last meaningful UART line = '{last_meaningful}'.")
+    if pc_symbol:
+        evidence.append(f"PC symbol = {pc_symbol}.")
+    if lr_symbol:
+        evidence.append(f"LR symbol = {lr_symbol}.")
+    if len(pc_samples) >= 2 and all(pc == pc_samples[0] for pc in pc_samples):
+        evidence.append(f"PC stuck at {hex(pc_samples[0])} for {len(pc_samples)} polls.")
     else:
-        suspected_root_causes.extend(
-            [
-                RootCauseHint(
-                    label=f"startup flow is blocked near {stage}",
-                    confidence="medium",
-                ),
-                RootCauseHint(
-                    label="firmware is stuck in a wait loop or peripheral bring-up path",
-                    confidence="medium",
-                ),
-            ]
-        )
-        suggested_next_steps.extend(
-            [
-                f"Check whether startup progress should continue after {stage}.",
-                "Inspect wait loops, timeout logic, and peripheral ready conditions.",
-                "Add one more log point immediately after the current last successful step.",
-            ]
-        )
+        evidence.append("PC samples = " + ", ".join(hex(pc) for pc in pc_samples) + ".")
+    evidence.append(f"LR = {hex(core['lr'])}.")
+    evidence.append(f"SP = {hex(core['sp'])}.")
+    evidence.append(f"xPSR = {hex(core['xpsr'])}.")
+    evidence.append(f"xPSR IPSR field = {ipsr}.")
+    if source:
+        evidence.append(f"Source = {source}.")
+    evidence.append(f"CFSR = {hex(cfsr)}, HFSR = {hex(hfsr)}.")
+    evidence.append(f"MMFAR = {hex(mmfar)}, BFAR = {hex(bfar)}.")
+    if startup_completed and not fault_detected:
+        evidence.append("Startup success markers present in UART logs.")
+    if cfsr & 0x00000001:
+        evidence.append("CFSR IACCVIOL bit set.")
+    if cfsr & 0x00000002:
+        evidence.append("CFSR DACCVIOL bit set.")
+    if cfsr & 0x00000080:
+        evidence.append(f"CFSR MMARVALID bit set, MMFAR = {hex(mmfar)}.")
+    if cfsr & 0x00000100:
+        evidence.append("CFSR IBUSERR bit set.")
+    if cfsr & 0x00000200:
+        evidence.append("CFSR PRECISERR bit set.")
+    if cfsr & 0x00000400:
+        evidence.append("CFSR IMPRECISERR bit set.")
+    if cfsr & 0x00008000:
+        evidence.append(f"CFSR BFARVALID bit set, BFAR = {hex(bfar)}.")
+    if cfsr & 0x00010000:
+        evidence.append("CFSR UNDEFINSTR bit set.")
+    if cfsr & 0x00020000:
+        evidence.append("CFSR INVSTATE bit set.")
+    if cfsr & 0x00040000:
+        evidence.append("CFSR INVPC bit set.")
+    if cfsr & 0x00080000:
+        evidence.append("CFSR NOCP bit set.")
+    if cfsr & 0x01000000:
+        evidence.append("CFSR UNALIGNED bit set.")
+    if cfsr & 0x02000000:
+        evidence.append("CFSR DIVBYZERO bit set.")
+    if hfsr & 0x00000002:
+        evidence.append("HFSR VECTTBL bit set.")
+    if hfsr & 0x40000000:
+        evidence.append("HFSR FORCED bit set.")
 
     return {
         "status": "ok",
@@ -264,8 +306,6 @@ def diagnose_startup_failure(
             log_stopped_abruptly=bool(last_meaningful) and not startup_completed,
         ).model_dump(),
         "evidence": evidence,
-        "suspected_root_causes": [item.model_dump() for item in suspected_root_causes],
-        "suggested_next_steps": suggested_next_steps,
         "raw_refs": {
             "elf_loaded": session.elf.is_loaded,
             "probe_backend": "pyocd",

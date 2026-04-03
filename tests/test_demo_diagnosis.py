@@ -13,6 +13,9 @@ def test_mock_startup_failure_contains_sensor_stage() -> None:
     assert result["diagnosis_type"] == "startup_failure_with_fault"
     assert result["startup_context"]["suspected_stage"] == "sensor init"
     assert result["log_context"]["last_meaningful_line"] == "sensor init..."
+    assert "suspected_root_causes" not in result
+    assert "suggested_next_steps" not in result
+    assert result["evidence"]
 
 
 def test_mock_hardfault_resolves_handler_symbol() -> None:
@@ -25,6 +28,9 @@ def test_mock_hardfault_resolves_handler_symbol() -> None:
 
     assert result["diagnosis_type"] == "hardfault_detected"
     assert result["symbol_context"]["pc_symbol"] == "HardFault_Handler"
+    assert "suspected_root_causes" not in result
+    assert "suggested_next_steps" not in result
+    assert result["evidence"]
 
 
 class _HealthyLogBackend:
@@ -99,3 +105,5 @@ def test_startup_success_is_reported_when_logs_continue_normally() -> None:
     assert result["log_context"]["log_stopped_abruptly"] is False
     assert result["fault"]["fault_detected"] is False
     assert result["log_context"]["last_meaningful_line"] == "app loop running"
+    assert "suspected_root_causes" not in result
+    assert "suggested_next_steps" not in result
