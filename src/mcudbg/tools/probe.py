@@ -773,6 +773,56 @@ def get_locals(session: SessionState) -> dict:
     }
 
 
+def set_local(session: SessionState, name: str, value: int) -> dict:
+    if not session.elf.is_loaded:
+        return {"status": "error", "summary": "ELF not loaded. Load an ELF file first."}
+    core = session.probe.read_core_registers()
+    pc = core["pc"]
+    variables = session.elf.get_locals_at(pc)
+    var = next((v for v in variables if v["name"] == name), None)
+    if var is None:
+        names = [v["name"] for v in variables]
+        return {
+            "status": "error",
+            "summary": f"Variable '{name}' not found at current PC.",
+            "available": names,
+        }
+    size = max(1, min(var["byte_size"], 4))
+    try:
+        raw = value.to_bytes(size, "little")
+    except OverflowError:
+        return {"status": "error", "summary": f"Value {value} does not fit in {size} byte(s)."}
+
+    loc_type = var["loc_type"]
+    loc_value = var["loc_value"]
+    try:
+        if loc_type == "addr":
+            session.probe.write_memory(loc_value, raw)
+        elif loc_type == "fbreg":
+            session.probe.write_memory(core["sp"] + loc_value, raw)
+        elif loc_type == "breg":
+            reg_name, offset = loc_value
+            reg_val = core.get(reg_name)
+            if reg_val is None:
+                return {"status": "error", "summary": f"Register '{reg_name}' not available."}
+            session.probe.write_memory(reg_val + offset, raw)
+        elif loc_type == "reg":
+            return {"status": "error", "summary": f"'{name}' lives in a register; use probe_write_memory to patch register state."}
+        else:
+            return {"status": "error", "summary": f"'{name}' has unknown location (optimized out or complex expression)."}
+    except Exception as e:
+        return {"status": "error", "summary": str(e)}
+
+    return {
+        "status": "ok",
+        "summary": f"Wrote {hex(value)} to local '{name}' ({var['type_name']}).",
+        "name": name,
+        "type": var["type_name"],
+        "value": hex(value),
+        "address": hex(core["sp"] + loc_value) if loc_type == "fbreg" else hex(loc_value) if loc_type == "addr" else None,
+    }
+
+
 def run_to_source(
     session: SessionState,
     file: str,

@@ -53,6 +53,7 @@ from .tools.probe import set_breakpoint as _set_breakpoint
 from .tools.probe import source_step as _source_step
 from .tools.probe import backtrace as _backtrace
 from .tools.probe import get_locals as _get_locals
+from .tools.probe import set_local as _set_local
 from .tools.probe import run_to_source as _run_to_source
 from .tools.probe import disassemble as _disassemble
 from .tools.probe import step_out as _step_out
@@ -273,6 +274,19 @@ async def get_locals() -> dict:
     Requires ELF with DWARF loaded and probe connected and target halted.
     """
     return _get_locals(session)
+
+
+@mcp.tool()
+async def set_local(name: str, value: int) -> dict:
+    """Write an integer value to a local variable by name at the current PC.
+
+    Resolves the variable's location via DWARF .debug_info and writes the value
+    to the corresponding stack address or absolute address.
+    Variables in registers or with complex locations cannot be written this way.
+    Requires ELF with DWARF loaded and probe connected and target halted.
+    Example: set_local('count', 0)
+    """
+    return _set_local(session, name=name, value=value)
 
 
 @mcp.tool()
