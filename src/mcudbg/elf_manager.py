@@ -128,6 +128,24 @@ class ElfManager:
     def is_loaded(self) -> bool:
         return self._path is not None
 
+    def get_sections(self) -> list[dict[str, Any]]:
+        """Return VMA, LMA, and size for each ELF section."""
+        if not self.is_loaded:
+            return []
+        sections = []
+        with self._path.open("rb") as handle:
+            elf = ELFFile(handle)
+            for section in elf.iter_sections():
+                if section["sh_size"] == 0:
+                    continue
+                sections.append({
+                    "name": section.name,
+                    "vma": hex(section["sh_addr"]),
+                    "size": section["sh_size"],
+                    "type": section["sh_type"],
+                })
+        return sections
+
     # ------------------------------------------------------------------ #
     # Symbol table
     # ------------------------------------------------------------------ #

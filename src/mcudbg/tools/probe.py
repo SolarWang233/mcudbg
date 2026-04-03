@@ -270,6 +270,56 @@ def memory_find(
     }
 
 
+def step_n_instructions(session: SessionState, count: int = 10) -> dict:
+    """Execute count instructions, recording PC and symbol at each step."""
+    MAX = 100
+    truncated = count > MAX
+    actual = min(count, MAX)
+    steps: list[dict] = []
+    try:
+        for i in range(actual):
+            session.probe.step()
+            core = session.probe.read_core_registers()
+            pc = core["pc"] & ~1
+            symbol = None
+            if session.elf.is_loaded:
+                symbol = session.elf.resolve_address(pc).get("symbol")
+            steps.append({"step": i + 1, "pc": hex(pc), "symbol": symbol})
+    except Exception as e:
+        return {"status": "error", "summary": str(e), "steps_completed": steps}
+    final_pc = steps[-1]["pc"] if steps else None
+    return {
+        "status": "ok",
+        "summary": f"Stepped {len(steps)} instruction(s). Final PC: {final_pc}.",
+        "steps": steps,
+        "final_pc": final_pc,
+        "truncated": truncated,
+    }
+
+
+_CORTEX_M_REGIONS = [
+    {"name": "Code",                   "start": "0x00000000", "end": "0x1fffffff"},
+    {"name": "SRAM",                   "start": "0x20000000", "end": "0x3fffffff"},
+    {"name": "Peripheral",             "start": "0x40000000", "end": "0x5fffffff"},
+    {"name": "External RAM",           "start": "0x60000000", "end": "0x9fffffff"},
+    {"name": "External device",        "start": "0xa0000000", "end": "0xdfffffff"},
+    {"name": "Private Peripheral Bus", "start": "0xe0000000", "end": "0xffffffff"},
+]
+
+
+def read_memory_map(session: SessionState) -> dict:
+    """Return Cortex-M address space regions and ELF section layout (if loaded)."""
+    elf_sections = None
+    if session.elf.is_loaded:
+        elf_sections = session.elf.get_sections()
+    return {
+        "status": "ok",
+        "summary": "Cortex-M memory map" + (" with ELF sections." if elf_sections else "."),
+        "cortex_m_regions": _CORTEX_M_REGIONS,
+        "elf_sections": elf_sections,
+    }
+
+
 def memory_snapshot(session: SessionState, address: int, size: int, label: str = "default") -> dict:
     """Capture a memory snapshot and store it under label for later diff."""
     try:
@@ -1136,22 +1186,47 @@ def backtrace(
 
 def step_out(session: SessionState, timeout_seconds: float = 5.0) -> dict:
     core = session.probe.read_core_registers()
-    lr = core["lr"] & ~1
-    session.probe.set_breakpoint(lr)
+    pc = core["pc"] & ~1
+
+    # Try DWARF CFI first — more reliable than LR under optimization
+    ret_addr: int | None = None
+    ret_source = "lr"
+    if session.elf.is_loaded:
+        cfi = session.elf.get_cfi_at(pc)
+        if cfi is not None:
+            cfa_reg = cfi.get("cfa_reg")
+            cfa_offset = cfi.get("cfa_offset", 0)
+            ra_offset = cfi.get("ra_offset")
+            if cfa_reg is not None and ra_offset is not None:
+                try:
+                    cfa = core.get(cfa_reg, 0) + cfa_offset
+                    saved_ra = int.from_bytes(session.probe.read_memory(cfa + ra_offset, 4), "little")
+                    if saved_ra > 0x100:
+                        ret_addr = saved_ra & ~1
+                        ret_source = "dwarf_cfi"
+                except Exception:
+                    pass
+
+    if ret_addr is None:
+        ret_addr = core["lr"] & ~1
+
+    session.probe.set_breakpoint(ret_addr)
     try:
         result = session.probe.continue_target(
             timeout_seconds=timeout_seconds, poll_interval_seconds=0.05
         )
     finally:
-        session.probe.clear_breakpoint(lr)
-    new_pc = int(result.get("pc", hex(lr)), 16)
+        session.probe.clear_breakpoint(ret_addr)
+
+    new_pc = int(result.get("pc", hex(ret_addr)), 16)
     src = session.elf.addr_to_source(new_pc) if session.elf.is_loaded else {"file": None, "line": None}
     sym = session.elf.resolve_address(new_pc)["symbol"] if session.elf.is_loaded else None
     return {
         "status": "ok",
         "summary": f"Stepped out to {hex(new_pc)}.",
         "pc": hex(new_pc),
-        "return_address": hex(lr),
+        "return_address": hex(ret_addr),
+        "return_address_source": ret_source,
         "source": f"{src['file']}:{src['line']}" if src["file"] else None,
         "symbol": sym,
     }

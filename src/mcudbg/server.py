@@ -39,6 +39,8 @@ from .tools.probe import halt_target as _halt_target
 from .tools.probe import list_connected_probes as _list_connected_probes
 from .tools.probe import diagnose_memory_corruption as _diagnose_memory_corruption
 from .tools.probe import memory_find as _memory_find
+from .tools.probe import step_n_instructions as _step_n_instructions
+from .tools.probe import read_memory_map as _read_memory_map
 from .tools.probe import list_rtos_tasks as _list_rtos_tasks
 from .tools.probe import rtos_task_context as _rtos_task_context
 from .tools.probe import read_rtt_log as _read_rtt_log
@@ -412,6 +414,29 @@ async def memory_find(address: int, size: int, pattern: list[int], max_results: 
     Example: memory_find(0x20000000, 0x10000, [0x53, 0x45, 0x47, 0x47, 0x45, 0x52])
     """
     return _memory_find(session, address=address, size=size, pattern=pattern, max_results=max_results)
+
+
+@mcp.tool()
+async def step_n_instructions(count: int = 10) -> dict:
+    """Execute count assembly instructions, recording PC and symbol at each step.
+
+    Returns a trace list. Useful for precisely tracking execution through
+    small code sequences without source-level stepping.
+    Maximum 100 steps per call (truncated=True if count exceeded).
+    Requires probe connected and target halted.
+    """
+    return _step_n_instructions(session, count=count)
+
+
+@mcp.tool()
+async def read_memory_map() -> dict:
+    """Return the Cortex-M address space layout and ELF section map.
+
+    Always returns the fixed Cortex-M region boundaries (Code/SRAM/Peripheral etc.).
+    If an ELF is loaded, also returns each section's name, VMA, and size.
+    No probe connection required.
+    """
+    return _read_memory_map(session)
 
 
 @mcp.tool()
