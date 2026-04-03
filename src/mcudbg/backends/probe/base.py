@@ -77,3 +77,12 @@ class ProbeBackend(ABC):
     @abstractmethod
     def step(self) -> dict[str, Any]:
         raise NotImplementedError
+
+    def set_watchpoint(self, address: int, size: int, watch_type: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def remove_watchpoint(self, address: int) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def clear_all_watchpoints(self) -> dict[str, Any]:
+        raise NotImplementedError

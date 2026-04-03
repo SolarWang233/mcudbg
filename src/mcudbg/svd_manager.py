@@ -190,6 +190,42 @@ class SvdManager:
             "diagnosis": diagnosis,
         }
 
+    def write_register(
+        self,
+        peripheral_name: str,
+        register_name: str,
+        value: int,
+        probe: Any,
+    ) -> dict[str, Any]:
+        if not self.is_loaded:
+            return {'status': 'error', 'summary': 'No SVD file loaded. Call svd_load first.'}
+        periph = self._resolve_peripheral(peripheral_name)
+        if periph is None:
+            return self._peripheral_not_found(peripheral_name)
+        registers = self._collect_registers(periph)
+        reg = next((r for r in registers if r['name'].upper() == register_name.upper()), None)
+        if reg is None:
+            available = [r['name'] for r in registers]
+            return {
+                'status': 'error',
+                'summary': f"Register '{register_name}' not found in {periph.name}.",
+                'available_registers': available,
+            }
+        addr = periph.base_address + reg['offset']
+        try:
+            raw = value.to_bytes(4, 'little')
+            probe.write_memory(addr, raw)
+        except Exception as e:
+            return {'status': 'error', 'summary': str(e)}
+        return {
+            'status': 'ok',
+            'summary': f"Wrote {hex(value)} to {periph.name}.{reg['name']} at {hex(addr)}.",
+            'peripheral': periph.name,
+            'register': reg['name'],
+            'address': hex(addr),
+            'value': hex(value),
+        }
+
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #

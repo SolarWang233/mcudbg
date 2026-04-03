@@ -40,6 +40,7 @@ class PyOcdProbeBackend(ProbeBackend):
         self._target = None
         self._probe_name = "pyocd"
         self._breakpoints: set[int] = set()
+        self._watchpoints: set[int] = set()
 
     def connect(self, target: str, unique_id: str | None = None) -> dict[str, Any]:
         if ConnectHelper is None:
@@ -74,6 +75,7 @@ class PyOcdProbeBackend(ProbeBackend):
         self._session = None
         self._target = None
         self._breakpoints.clear()
+        self._watchpoints.clear()
         return {"status": "ok", "summary": "Disconnected probe session."}
 
     def halt(self) -> dict[str, Any]:
@@ -228,3 +230,47 @@ class PyOcdProbeBackend(ProbeBackend):
         if (pc - 4) in self._breakpoints:
             return True
         return False
+
+    def set_watchpoint(self, address: int, size: int, watch_type: str) -> dict[str, Any]:
+        self._require_target()
+        if Target is None:
+            raise BackendUnavailableError('pyocd is not installed')
+        type_map = {
+            'read': Target.WatchpointType.READ,
+            'write': Target.WatchpointType.WRITE,
+            'read_write': Target.WatchpointType.READ_WRITE,
+        }
+        wp_type = type_map.get(watch_type)
+        if wp_type is None:
+            raise ValueError(f"Invalid watch_type '{watch_type}'. Use: read, write, read_write")
+        self._target.set_watchpoint(address, size, wp_type)
+        self._watchpoints.add(address)
+        return {
+            'status': 'ok',
+            'summary': f'Watchpoint set at {hex(address)}, size={size}, type={watch_type}.',
+            'address': hex(address),
+            'size': size,
+            'watch_type': watch_type,
+        }
+
+    def remove_watchpoint(self, address: int) -> dict[str, Any]:
+        self._require_target()
+        self._target.remove_watchpoint(address)
+        self._watchpoints.discard(address)
+        return {
+            'status': 'ok',
+            'summary': f'Watchpoint removed at {hex(address)}.',
+            'address': hex(address),
+        }
+
+    def clear_all_watchpoints(self) -> dict[str, Any]:
+        self._require_target()
+        for address in list(self._watchpoints):
+            self._target.remove_watchpoint(address)
+        cleared = len(self._watchpoints)
+        self._watchpoints.clear()
+        return {
+            'status': 'ok',
+            'summary': f'Cleared {cleared} watchpoint(s).',
+            'cleared_count': cleared,
+        }

@@ -20,7 +20,11 @@ from .tools.svd import svd_load as _svd_load
 from .tools.svd import svd_list_peripherals as _svd_list_peripherals
 from .tools.svd import svd_get_registers as _svd_get_registers
 from .tools.svd import svd_read_peripheral as _svd_read_peripheral
+from .tools.svd import svd_write_register as _svd_write_register
+from .tools.phase3 import diagnose_clock_issue as _diagnose_clock_issue
+from .tools.phase3 import diagnose_interrupt_issue as _diagnose_interrupt_issue
 from .tools.phase3 import diagnose_peripheral_stuck as _diagnose_peripheral_stuck
+from .tools.phase3 import diagnose_stack_overflow as _diagnose_stack_overflow
 from .tools.logs import connect_log as _connect_log
 from .tools.logs import disconnect_log as _disconnect_log
 from .tools.logs import tail_logs as _tail_logs
@@ -32,13 +36,19 @@ from .tools.probe import clear_breakpoint as _clear_breakpoint
 from .tools.probe import disconnect_probe as _disconnect_probe
 from .tools.probe import halt_target as _halt_target
 from .tools.probe import list_connected_probes as _list_connected_probes
+from .tools.probe import read_memory as _read_memory
 from .tools.probe import read_registers as _read_registers
+from .tools.probe import read_symbol_value as _read_symbol_value
 from .tools.probe import read_stopped_context as _read_stopped_context
 from .tools.probe import reset_target as _reset_target
 from .tools.probe import resume_target as _resume_target
+from .tools.probe import set_watchpoint as _set_watchpoint
+from .tools.probe import remove_watchpoint as _remove_watchpoint
+from .tools.probe import clear_all_watchpoints as _clear_all_watchpoints
 from .tools.probe import set_breakpoint as _set_breakpoint
 from .tools.probe import step_instruction as _step_instruction
 from .tools.probe import write_memory as _write_memory
+from .tools.probe import write_symbol_value as _write_symbol_value
 
 mcp = FastMCP("mcudbg")
 session = SessionState()
@@ -215,6 +225,71 @@ async def probe_write_memory(address: int, data: list[int]) -> dict:
 
 
 @mcp.tool()
+async def probe_read_memory(address: int, size: int) -> dict:
+    """Read bytes from target memory at the given address.
+
+    Returns raw bytes plus convenience integer interpretations (u8/u16/u32 little-endian).
+    Requires probe connected and target halted.
+    Example: probe_read_memory(0x20000000, 4)
+    """
+    return _read_memory(session, address=address, size=size)
+
+
+@mcp.tool()
+async def read_symbol_value(name: str, size: int = 4) -> dict:
+    """Read the value of a symbol (variable, linker symbol) by name from target memory.
+
+    Resolves the symbol address via ELF, then reads 'size' bytes at that address.
+    Returns raw bytes plus u8/u16/u32 interpretations (little-endian).
+    Requires ELF loaded and probe connected.
+    Example: read_symbol_value('g_error_count', 4)
+    Example: read_symbol_value('_Min_Stack_Size', 4)
+    """
+    return _read_symbol_value(session, name=name, size=size)
+
+
+@mcp.tool()
+async def write_symbol_value(name: str, value: int, size: int = 4) -> dict:
+    """Write an integer value to a symbol (variable) by name in target memory.
+
+    Resolves the symbol address via ELF, then writes 'size' bytes (little-endian).
+    Requires ELF loaded and probe connected.
+    Example: write_symbol_value('g_error_count', 0, 4)
+    Example: write_symbol_value('g_mode', 1, 1)
+    """
+    return _write_symbol_value(session, name=name, value=value, size=size)
+
+
+@mcp.tool()
+async def probe_set_watchpoint(
+    address: int,
+    size: int = 4,
+    watch_type: str = 'write',
+) -> dict:
+    """Set a hardware data watchpoint on a memory address.
+
+    Halts the target when the address is accessed according to watch_type.
+    watch_type: 'read', 'write', or 'read_write'
+    size: number of bytes to watch (1, 2, or 4; Cortex-M supports up to 4 watchpoints)
+    Requires probe connected and target halted.
+    Example: probe_set_watchpoint(0x20000010, 4, 'write')
+    """
+    return _set_watchpoint(session, address=address, size=size, watch_type=watch_type)
+
+
+@mcp.tool()
+async def probe_remove_watchpoint(address: int) -> dict:
+    """Remove a hardware watchpoint at the given address."""
+    return _remove_watchpoint(session, address=address)
+
+
+@mcp.tool()
+async def probe_clear_all_watchpoints() -> dict:
+    """Remove all hardware watchpoints."""
+    return _clear_all_watchpoints(session)
+
+
+@mcp.tool()
 async def probe_read_registers() -> dict:
     return _read_registers(session)
 
@@ -284,6 +359,18 @@ async def svd_read_peripheral(peripheral: str) -> dict:
 
 
 @mcp.tool()
+async def svd_write_register(peripheral: str, register: str, value: int) -> dict:
+    """Write a 32-bit value to a peripheral register by name using SVD addressing.
+
+    Looks up the register address from the loaded SVD, then writes the value.
+    Requires SVD loaded and probe connected.
+    Example: svd_write_register('USART2', 'CR1', 0x000C)
+    Example: svd_write_register('GPIOA', 'ODR', 0x0001)
+    """
+    return _svd_write_register(session, peripheral=peripheral, register=register, value=value)
+
+
+@mcp.tool()
 async def diagnose_peripheral_stuck(peripheral: str, symptom: str | None = None) -> dict:
     """Diagnose why a peripheral is not working.
 
@@ -293,6 +380,29 @@ async def diagnose_peripheral_stuck(peripheral: str, symptom: str | None = None)
     Example: diagnose_peripheral_stuck('USART2', 'no output from TX pin')
     """
     return _diagnose_peripheral_stuck(session, peripheral=peripheral, symptom=symptom)
+
+
+@mcp.tool()
+async def diagnose_stack_overflow() -> dict:
+    """Diagnose potential stack overflow on a Cortex-M target.
+
+    Reads VTOR (0xE000ED08) to locate the vector table, extracts the
+    initial SP from word 0, and compares it with the current SP.
+    If an ELF is loaded and _Min_Stack_Size is available, reports
+    remaining stack space and detects overflow.
+    Requires probe connected and target halted.
+    """
+    return _diagnose_stack_overflow(session)
+
+
+@mcp.tool()
+async def diagnose_interrupt_issue() -> dict:
+    return _diagnose_interrupt_issue(session)
+
+
+@mcp.tool()
+async def diagnose_clock_issue() -> dict:
+    return _diagnose_clock_issue(session)
 
 
 @mcp.tool()

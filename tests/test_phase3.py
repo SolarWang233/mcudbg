@@ -154,3 +154,42 @@ def test_probe_not_connected(svd_file):
     result = diagnose_peripheral_stuck(session, "USART2")
     assert result["status"] == "error"
     assert "Probe" in result["summary"]
+
+
+def test_no_matching_rcc_clock_field(svd_file):
+    """RCC is present in SVD but has no *EN field matching the peripheral name."""
+    # "RCC" itself is in the SVD; searching for "RCCE" in RCC registers will
+    # find nothing, exercising the "No clock-enable bit found" fallback path.
+    session = _make_session(svd_file, {
+        _RCC_APB1ENR1_ADDR: 0x0,
+        0x40021000: 0x0,   # RCC base (CR register at offset 0)
+    })
+    result = diagnose_peripheral_stuck(session, "RCC")
+    assert result["status"] == "ok"
+    rcc_text = " ".join(result["rcc_notes"])
+    assert "No clock-enable bit found" in rcc_text
+
+
+def test_rcc_register_read_failure(svd_file):
+    """Probe raises when reading the RCC register; error should appear in rcc_notes."""
+    _CORTEX_M_SCS = 0xE000E000
+    _USART2_CR1 = _USART2_CR1_ADDR
+
+    def read_memory(addr, size):
+        if addr == _RCC_APB1ENR1_ADDR:
+            raise OSError("bus error on RCC")
+        return struct.pack("<I", {_CORTEX_M_SCS: 0x0, _USART2_CR1: 0x0}.get(addr, 0))[:size]
+
+    svd = SvdManager()
+    svd.load(svd_file)
+    probe = MagicMock()
+    probe.read_memory.side_effect = read_memory
+
+    session = MagicMock()
+    session.svd = svd
+    session.probe = probe
+
+    result = diagnose_peripheral_stuck(session, "USART2")
+    assert result["status"] == "ok"
+    rcc_text = " ".join(result["rcc_notes"])
+    assert "Failed to read RCC register" in rcc_text

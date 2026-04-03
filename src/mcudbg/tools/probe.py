@@ -162,6 +162,115 @@ def write_memory(session: SessionState, address: int, data: list[int]) -> dict:
     }
 
 
+def read_memory(session: SessionState, address: int, size: int) -> dict:
+    try:
+        data = session.probe.read_memory(address, size)
+    except Exception as e:
+        return {
+            "status": "error",
+            "summary": str(e),
+        }
+    return {
+        "status": "ok",
+        "summary": f"Read {size} byte(s) from {hex(address)}.",
+        "address": hex(address),
+        "size": size,
+        "hex": data.hex(),
+        "bytes": list(data),
+        "value_u32": int.from_bytes(data[:4], "little") if size >= 4 else None,
+        "value_u16": int.from_bytes(data[:2], "little") if size >= 2 else None,
+        "value_u8": data[0] if size >= 1 else None,
+    }
+
+
+def read_symbol_value(session: SessionState, name: str, size: int = 4) -> dict:
+    if not session.elf.is_loaded:
+        return {
+            "status": "error",
+            "summary": "ELF not loaded. Load an ELF file first.",
+        }
+    resolved = session.elf.resolve_symbol(name)
+    if resolved["address"] is None:
+        return {
+            "status": "error",
+            "summary": f"Symbol '{name}' not found in ELF.",
+        }
+    addr = int(resolved["address"], 16)
+    try:
+        data = session.probe.read_memory(addr, size)
+    except Exception as e:
+        return {
+            "status": "error",
+            "summary": str(e),
+        }
+    return {
+        "status": "ok",
+        "summary": f"Read symbol '{name}' at {hex(addr)}, {size} byte(s).",
+        "symbol": name,
+        "address": hex(addr),
+        "size": size,
+        "hex": data.hex(),
+        "bytes": list(data),
+        "value_u32": int.from_bytes(data[:4], "little") if size >= 4 else None,
+        "value_u16": int.from_bytes(data[:2], "little") if size >= 2 else None,
+        "value_u8": data[0] if size >= 1 else None,
+    }
+
+
+def write_symbol_value(session: SessionState, name: str, value: int, size: int = 4) -> dict:
+    if not session.elf.is_loaded:
+        return {
+            "status": "error",
+            "summary": "ELF not loaded. Load an ELF file first.",
+        }
+    resolved = session.elf.resolve_symbol(name)
+    if resolved["address"] is None:
+        return {
+            "status": "error",
+            "summary": f"Symbol '{name}' not found in ELF.",
+        }
+    addr = int(resolved["address"], 16)
+    try:
+        raw = value.to_bytes(size, "little")
+    except OverflowError:
+        return {
+            "status": "error",
+            "summary": f"Value {value} does not fit in {size} byte(s).",
+        }
+    try:
+        session.probe.write_memory(addr, raw)
+    except Exception as e:
+        return {
+            "status": "error",
+            "summary": str(e),
+        }
+    return {
+        "status": "ok",
+        "summary": f"Wrote {hex(value)} to symbol '{name}' at {hex(addr)}, {size} byte(s).",
+        "symbol": name,
+        "address": hex(addr),
+        "size": size,
+        "value": hex(value),
+    }
+
+
+def set_watchpoint(
+    session: SessionState,
+    address: int,
+    size: int = 4,
+    watch_type: str = 'write',
+) -> dict:
+    return session.probe.set_watchpoint(address, size, watch_type)
+
+
+def remove_watchpoint(session: SessionState, address: int) -> dict:
+    return session.probe.remove_watchpoint(address)
+
+
+def clear_all_watchpoints(session: SessionState) -> dict:
+    return session.probe.clear_all_watchpoints()
+
+
 def read_registers(session: SessionState) -> dict:
     values = session.probe.read_core_registers()
     return {
