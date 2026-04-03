@@ -54,6 +54,7 @@ from .tools.probe import elf_list_functions as _elf_list_functions
 from .tools.probe import elf_symbol_info as _elf_symbol_info
 from .tools.probe import list_rtos_tasks as _list_rtos_tasks
 from .tools.probe import rtos_task_context as _rtos_task_context
+from .tools.probe import rtos_switch_context as _rtos_switch_context
 from .tools.probe import read_rtt_log as _read_rtt_log
 from .tools.probe import dump_memory as _dump_memory
 from .tools.probe import memory_snapshot as _memory_snapshot
@@ -715,6 +716,20 @@ async def rtos_task_context(task_name: str, task_name_len: int = 16) -> dict:
     Requires ELF loaded and probe connected with target halted.
     """
     return _rtos_task_context(session, task_name=task_name, task_name_len=task_name_len)
+
+
+@mcp.tool()
+async def rtos_switch_context(task_name: str, task_name_len: int = 16) -> dict:
+    """Switch CPU context to a blocked or suspended FreeRTOS task.
+
+    Uses the saved exception frame from the task's stack (stored in TCB.pxTopOfStack),
+    constructs a new exception frame on the current stack, and sets LR to EXC_RETURN
+    so that stepping once enters the task context. After switching, you can step
+    or continue to execute the target task.
+    Requires ELF loaded and probe connected with target halted.
+    Example: rtos_switch_context('idle_task')
+    """
+    return _rtos_switch_context(session, task_name=task_name, task_name_len=task_name_len)
 
 
 @mcp.tool()

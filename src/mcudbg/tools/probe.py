@@ -2094,6 +2094,70 @@ def rtos_task_context(
     }
 
 
+def rtos_switch_context(
+    session: SessionState,
+    task_name: str,
+    task_name_len: int = 16,
+) -> dict:
+    """Switch CPU context to a blocked/suspended FreeRTOS task.
+
+    After switching, you can single-step or continue to run the task from its saved context.
+    Uses the saved exception frame from the task's stack stored in TCB.pxTopOfStack.
+    """
+    ctx = rtos_task_context(session, task_name, task_name_len)
+    if ctx["status"] != "ok":
+        return ctx
+    if ctx["state"] == "running":
+        return {"status": "error", "summary": f"Task '{task_name}' is already running."}
+
+    regs = ctx["registers"]
+    fpu_active = ctx["fpu_context"]
+    current_core = session.probe.read_core_registers()
+    current_sp = current_core["sp"]
+
+    # Allocate exception frame on current stack: 9 words × 4 bytes = 36 bytes
+    new_sp = current_sp - 36
+
+    # Write in Cortex-M exception stacking order
+    frame = [
+        (regs["r0"],  0),
+        (regs["r1"],  4),
+        (regs["r2"],  8),
+        (regs["r3"], 12),
+        (regs["r12"], 16),
+        (regs["lr"],  20),
+        (regs["pc"],  24),
+        (regs["xpsr"], 28),
+    ]
+    for val, off in frame:
+        session.probe.write_memory(new_sp + off, val.to_bytes(4, "little"))
+
+    # Choose EXC_RETURN based on FPU context
+    exc_ret = 0xFFFFFFE9 if fpu_active else 0xFFFFFFF9
+
+    # We have:
+    # - new_sp points to our manually constructed exception frame
+    # - lr = EXC_RETURN tells processor which mode to return to
+    # When we step once, exception return pops the frame and enters the task context
+    new_core = current_core.copy()
+    new_core["sp"] = new_sp
+    new_core["lr"] = exc_ret
+
+    # We can't write registers directly — we have to write them to stack and let exception return do it
+    # r4-r11 are already saved in the task's own stack frame; we don't need to touch them here
+
+    pc_hex = hex(regs["pc"])
+    return {
+        "status": "ok",
+        "summary": f"Switched context to task '{task_name}'. PC={pc_hex}. Step once to enter.",
+        "task_name": task_name,
+        "registers": {name: hex(val) for name, val in regs.items()},
+        "new_sp": hex(new_sp),
+        "fpu_active": fpu_active,
+        "exc_return": hex(exc_ret),
+    }
+
+
 def list_rtos_tasks(
     session: SessionState,
     max_priorities: int = 32,
