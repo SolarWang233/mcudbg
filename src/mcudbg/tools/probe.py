@@ -710,6 +710,69 @@ def step_over(session: SessionState, max_source_instructions: int = 100) -> dict
     return source_step(session, max_instructions=max_source_instructions)
 
 
+def get_locals(session: SessionState) -> dict:
+    if not session.elf.is_loaded:
+        return {"status": "error", "summary": "ELF not loaded. Load an ELF file first."}
+    core = session.probe.read_core_registers()
+    pc = core["pc"]
+    variables = session.elf.get_locals_at(pc)
+    if not variables:
+        return {
+            "status": "ok",
+            "summary": "No local variable info at current PC (no DWARF or optimized out).",
+            "pc": hex(pc),
+            "variables": [],
+        }
+    result: list[dict] = []
+    for var in variables:
+        entry: dict = {
+            "name": var["name"],
+            "type": var["type_name"],
+            "byte_size": var["byte_size"],
+            "value": None,
+            "hex": None,
+            "note": None,
+        }
+        try:
+            size = max(1, min(var["byte_size"], 8))
+            loc_type = var["loc_type"]
+            loc_value = var["loc_value"]
+            data: bytes | None = None
+
+            if loc_type == "addr":
+                data = session.probe.read_memory(loc_value, size)
+            elif loc_type == "fbreg":
+                data = session.probe.read_memory(core["sp"] + loc_value, size)
+            elif loc_type == "reg":
+                reg_val = core.get(loc_value)
+                if reg_val is not None:
+                    data = reg_val.to_bytes(4, "little")
+            elif loc_type == "breg":
+                reg_name, offset = loc_value
+                reg_val = core.get(reg_name)
+                if reg_val is not None:
+                    data = session.probe.read_memory(reg_val + offset, size)
+            else:
+                entry["note"] = "location unknown (optimized out or complex expression)"
+
+            if data:
+                int_val = int.from_bytes(data[:min(size, 4)], "little")
+                entry["value"] = int_val
+                entry["hex"] = hex(int_val)
+        except Exception as e:
+            entry["note"] = str(e)
+        result.append(entry)
+
+    src = session.elf.addr_to_source(pc)
+    return {
+        "status": "ok",
+        "summary": f"Found {len(result)} local variable(s) at {hex(pc)}.",
+        "pc": hex(pc),
+        "source": f"{src['file']}:{src['line']}" if src["file"] else None,
+        "variables": result,
+    }
+
+
 def run_to_source(
     session: SessionState,
     file: str,

@@ -52,6 +52,7 @@ from .tools.probe import addr_to_source as _addr_to_source
 from .tools.probe import set_breakpoint as _set_breakpoint
 from .tools.probe import source_step as _source_step
 from .tools.probe import backtrace as _backtrace
+from .tools.probe import get_locals as _get_locals
 from .tools.probe import run_to_source as _run_to_source
 from .tools.probe import disassemble as _disassemble
 from .tools.probe import step_out as _step_out
@@ -260,6 +261,18 @@ async def disassemble(address: int, count: int = 10) -> dict:
     Example: disassemble(0x08001234, 10)
     """
     return _disassemble(session, address=address, count=count)
+
+
+@mcp.tool()
+async def get_locals() -> dict:
+    """Read local variables and parameters at the current PC using DWARF .debug_info.
+
+    Resolves each variable's location (stack offset, register, or absolute address)
+    and reads its current value from the target. Variables optimized out or using
+    complex location expressions will have value=null.
+    Requires ELF with DWARF loaded and probe connected and target halted.
+    """
+    return _get_locals(session)
 
 
 @mcp.tool()

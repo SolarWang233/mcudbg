@@ -1,11 +1,46 @@
 from __future__ import annotations
 
 import bisect
+import struct
 from pathlib import Path
 from typing import Any
 
 from elftools.elf.elffile import ELFFile
 from elftools.elf.sections import SymbolTableSection
+
+# ARM register index → name (for DWARF DW_OP_reg / DW_OP_breg)
+_ARM_REGS = ["r0","r1","r2","r3","r4","r5","r6","r7",
+             "r8","r9","r10","r11","r12","sp","lr","pc"]
+
+
+def _decode_sleb128(data: bytes | list[int]) -> int:
+    result = 0
+    shift = 0
+    for byte in data:
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if not (byte & 0x80):
+            if byte & 0x40:
+                result |= -(1 << shift)
+            break
+    return result
+
+
+def _decode_uleb128(data: bytes | list[int]) -> int:
+    result = 0
+    shift = 0
+    for byte in data:
+        result |= (byte & 0x7F) << shift
+        shift += 7
+        if not (byte & 0x80):
+            break
+    return result
+
+
+def _decode_name(val: Any) -> str:
+    if isinstance(val, bytes):
+        return val.decode("utf-8", errors="replace")
+    return str(val)
 
 
 class ElfManager:
@@ -15,6 +50,7 @@ class ElfManager:
         self._all_symbols: list[dict[str, Any]] = []
         self._line_addrs: list[int] = []
         self._line_entries: list[tuple[str, int]] = []
+        self._func_locals: list[dict[str, Any]] = []   # Phase 5
 
     def load(self, path: str) -> dict[str, Any]:
         file_path = Path(path)
@@ -22,22 +58,22 @@ class ElfManager:
             elf = ELFFile(handle)
             self._func_symbols, self._all_symbols = self._load_symbols(elf)
             self._line_addrs, self._line_entries = self._build_line_table(elf)
+            self._func_locals = self._build_func_locals(elf)
         self._path = file_path
         return {
             "status": "ok",
             "summary": f"Loaded ELF symbols from {file_path.name}.",
             "symbol_count": len(self._func_symbols),
             "line_entry_count": len(self._line_addrs),
+            "func_with_locals": len(self._func_locals),
         }
 
     def addr_to_source(self, address: int) -> dict[str, Any]:
         if not self._line_addrs:
             return {"file": None, "line": None}
-
         idx = bisect.bisect_right(self._line_addrs, address) - 1
         if idx < 0:
             return {"file": None, "line": None}
-
         filename, line = self._line_entries[idx]
         return {"file": filename, "line": line}
 
@@ -49,7 +85,6 @@ class ElfManager:
             if start <= address < end:
                 best_match = symbol
                 break
-
         source_info = self.addr_to_source(address)
         filename = source_info["file"]
         line = source_info["line"]
@@ -60,7 +95,6 @@ class ElfManager:
         }
 
     def source_to_addrs(self, filename: str, line: int) -> list[int]:
-        """Return all addresses in the line table matching the given file:line."""
         matches = []
         for addr, (file, ln) in zip(self._line_addrs, self._line_entries):
             if ln != line:
@@ -78,9 +112,21 @@ class ElfManager:
             "source": None,
         }
 
+    def get_locals_at(self, pc: int) -> list[dict[str, Any]]:
+        """Return variable descriptors for the function containing pc."""
+        addr = pc & ~1
+        for func in self._func_locals:
+            if func["low_pc"] <= addr < func["high_pc"]:
+                return func["variables"]
+        return []
+
     @property
     def is_loaded(self) -> bool:
         return self._path is not None
+
+    # ------------------------------------------------------------------ #
+    # Symbol table
+    # ------------------------------------------------------------------ #
 
     def _load_symbols(self, elf: ELFFile) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         func_symbols: list[dict[str, Any]] = []
@@ -101,21 +147,19 @@ class ElfManager:
                 all_symbols.append(symbol_info)
                 if symbol_type != "STT_FUNC":
                     continue
-                func_symbols.append(
-                    {
-                        **symbol_info,
-                        "address": symbol_info["address"] & ~1,
-                    }
-                )
+                func_symbols.append({**symbol_info, "address": symbol_info["address"] & ~1})
         return (
             sorted(func_symbols, key=lambda item: item["address"]),
             sorted(all_symbols, key=lambda item: item["address"]),
         )
 
+    # ------------------------------------------------------------------ #
+    # .debug_line
+    # ------------------------------------------------------------------ #
+
     def _build_line_table(self, elf: ELFFile) -> tuple[list[int], list[tuple[str, int]]]:
         if not elf.has_dwarf_info():
             return [], []
-
         dwarf = elf.get_dwarf_info()
         rows: list[tuple[int, str, int]] = []
         for cu in dwarf.iter_CUs():
@@ -123,7 +167,6 @@ class ElfManager:
                 lineprog = dwarf.line_program_for_CU(cu)
                 if lineprog is None:
                     continue
-
                 file_entries = lineprog["file_entry"]
                 for entry in lineprog.get_entries():
                     state = entry.state
@@ -131,16 +174,202 @@ class ElfManager:
                         continue
                     if state.file < 1 or state.file > len(file_entries):
                         continue
-
                     raw_name = file_entries[state.file - 1].name
-                    filename = (
-                        raw_name.decode("utf-8", errors="replace")
-                        if isinstance(raw_name, bytes)
-                        else str(raw_name)
-                    )
+                    filename = _decode_name(raw_name)
                     rows.append((int(state.address), filename, int(state.line)))
             except Exception:
                 continue
-
         rows.sort(key=lambda row: row[0])
         return [row[0] for row in rows], [(row[1], row[2]) for row in rows]
+
+    # ------------------------------------------------------------------ #
+    # .debug_info — Phase 5
+    # ------------------------------------------------------------------ #
+
+    def _build_func_locals(self, elf: ELFFile) -> list[dict[str, Any]]:
+        if not elf.has_dwarf_info():
+            return []
+        dwarf = elf.get_dwarf_info()
+        functions: list[dict[str, Any]] = []
+        for cu in dwarf.iter_CUs():
+            try:
+                cu_offset = cu.cu_offset
+                # Build die_map: abs_offset -> DIE (within this CU)
+                die_map: dict[int, Any] = {}
+                for die in cu.iter_DIEs():
+                    die_map[die.offset] = die
+                # Second pass: extract subprograms
+                for die in cu.iter_DIEs():
+                    if die.tag != "DW_TAG_subprogram":
+                        continue
+                    func = self._parse_subprogram(die, die_map, cu_offset)
+                    if func:
+                        functions.append(func)
+            except Exception:
+                continue
+        return functions
+
+    def _parse_subprogram(
+        self, die: Any, die_map: dict[int, Any], cu_offset: int
+    ) -> dict[str, Any] | None:
+        low_attr = die.attributes.get("DW_AT_low_pc")
+        high_attr = die.attributes.get("DW_AT_high_pc")
+        if low_attr is None or high_attr is None:
+            return None
+        low_pc = int(low_attr.value) & ~1
+        # high_pc is offset if it's a data form, absolute if addr form
+        if high_attr.form in (
+            "DW_FORM_data1", "DW_FORM_data2", "DW_FORM_data4",
+            "DW_FORM_data8", "DW_FORM_udata", "DW_FORM_sdata",
+        ):
+            high_pc = low_pc + int(high_attr.value)
+        else:
+            high_pc = int(high_attr.value) & ~1
+
+        frame_base_reg = self._parse_frame_base(die)
+        variables: list[dict[str, Any]] = []
+        for child in die.iter_children():
+            if child.tag not in ("DW_TAG_variable", "DW_TAG_formal_parameter"):
+                continue
+            var = self._parse_var_die(child, die_map, cu_offset)
+            if var:
+                variables.append(var)
+        return {
+            "low_pc": low_pc,
+            "high_pc": high_pc,
+            "frame_base_reg": frame_base_reg,
+            "variables": variables,
+        }
+
+    def _parse_frame_base(self, die: Any) -> str:
+        fb = die.attributes.get("DW_AT_frame_base")
+        if fb is None:
+            return "sp"
+        if fb.form == "DW_FORM_exprloc":
+            expr = fb.value
+            if expr:
+                op = expr[0]
+                if 0x50 <= op <= 0x5F:  # DW_OP_reg0..15
+                    idx = op - 0x50
+                    return _ARM_REGS[idx] if idx < len(_ARM_REGS) else "sp"
+                if 0x70 <= op <= 0x7F:  # DW_OP_breg0..15
+                    idx = op - 0x70
+                    return _ARM_REGS[idx] if idx < len(_ARM_REGS) else "sp"
+        return "sp"
+
+    def _parse_var_die(
+        self, die: Any, die_map: dict[int, Any], cu_offset: int
+    ) -> dict[str, Any] | None:
+        name_attr = die.attributes.get("DW_AT_name")
+        if name_attr is None:
+            return None
+        name = _decode_name(name_attr.value)
+        loc = self._parse_location(die)
+        type_info = self._resolve_type(die, die_map, cu_offset, depth=0)
+        return {
+            "name": name,
+            "type_name": type_info["name"],
+            "byte_size": type_info["byte_size"],
+            "loc_type": loc["type"],
+            "loc_value": loc["value"],
+        }
+
+    def _parse_location(self, die: Any) -> dict[str, Any]:
+        loc_attr = die.attributes.get("DW_AT_location")
+        if loc_attr is None:
+            return {"type": "unknown", "value": None}
+        if loc_attr.form != "DW_FORM_exprloc":
+            # Location list reference — skip for now
+            return {"type": "unknown", "value": None}
+        expr = loc_attr.value
+        if not expr:
+            return {"type": "unknown", "value": None}
+        op = expr[0]
+        # DW_OP_addr (0x03) — absolute address
+        if op == 0x03 and len(expr) >= 5:
+            addr = struct.unpack_from("<I", bytes(expr[1:5]))[0]
+            return {"type": "addr", "value": addr}
+        # DW_OP_fbreg (0x77) — SLEB128 offset from frame base
+        if op == 0x77 and len(expr) >= 2:
+            offset = _decode_sleb128(expr[1:])
+            return {"type": "fbreg", "value": offset}
+        # DW_OP_reg0..15 (0x50..0x5F) — value is in register
+        if 0x50 <= op <= 0x5F:
+            idx = op - 0x50
+            return {"type": "reg", "value": _ARM_REGS[idx] if idx < len(_ARM_REGS) else f"r{idx}"}
+        # DW_OP_breg0..15 (0x70..0x7F) — SLEB128 offset from register
+        if 0x70 <= op <= 0x7F and len(expr) >= 2:
+            idx = op - 0x70
+            reg = _ARM_REGS[idx] if idx < len(_ARM_REGS) else f"r{idx}"
+            offset = _decode_sleb128(expr[1:])
+            return {"type": "breg", "value": (reg, offset)}
+        return {"type": "unknown", "value": None}
+
+    def _resolve_type(
+        self, die: Any, die_map: dict[int, Any], cu_offset: int, depth: int
+    ) -> dict[str, Any]:
+        if depth > 6:
+            return {"name": "unknown", "byte_size": 4}
+        type_attr = die.attributes.get("DW_AT_type")
+        if type_attr is None:
+            return {"name": "void", "byte_size": 0}
+        # Resolve absolute offset
+        form = type_attr.form
+        if form in ("DW_FORM_ref1","DW_FORM_ref2","DW_FORM_ref4","DW_FORM_ref8","DW_FORM_ref_udata"):
+            abs_offset = cu_offset + int(type_attr.value)
+        else:
+            abs_offset = int(type_attr.value)
+        type_die = die_map.get(abs_offset)
+        if type_die is None:
+            return {"name": "unknown", "byte_size": 4}
+        return self._extract_type(type_die, die_map, cu_offset, depth + 1)
+
+    def _extract_type(
+        self, die: Any, die_map: dict[int, Any], cu_offset: int, depth: int
+    ) -> dict[str, Any]:
+        if depth > 6:
+            return {"name": "unknown", "byte_size": 4}
+        tag = die.tag
+
+        def size() -> int:
+            a = die.attributes.get("DW_AT_byte_size")
+            return int(a.value) if a else 4
+
+        def name_attr() -> str | None:
+            a = die.attributes.get("DW_AT_name")
+            return _decode_name(a.value) if a else None
+
+        def follow() -> dict[str, Any]:
+            return self._resolve_type(die, die_map, cu_offset, depth)
+
+        if tag == "DW_TAG_base_type":
+            return {"name": name_attr() or "unknown", "byte_size": size()}
+
+        if tag == "DW_TAG_pointer_type":
+            inner = follow()
+            return {"name": f"{inner['name']}*", "byte_size": size()}
+
+        if tag in ("DW_TAG_typedef", "DW_TAG_const_type",
+                   "DW_TAG_volatile_type", "DW_TAG_restrict_type"):
+            inner = follow()
+            if tag == "DW_TAG_typedef":
+                n = name_attr()
+                if n:
+                    return {"name": n, "byte_size": inner["byte_size"]}
+            return inner
+
+        if tag in ("DW_TAG_structure_type", "DW_TAG_union_type"):
+            prefix = "struct" if tag == "DW_TAG_structure_type" else "union"
+            n = name_attr()
+            label = f"{prefix} {n}" if n else prefix
+            return {"name": label, "byte_size": size()}
+
+        if tag == "DW_TAG_enumeration_type":
+            n = name_attr() or ""
+            return {"name": f"enum {n}".strip(), "byte_size": size()}
+
+        if tag == "DW_TAG_array_type":
+            inner = follow()
+            return {"name": f"{inner['name']}[]", "byte_size": size()}
+
+        return {"name": tag.replace("DW_TAG_", ""), "byte_size": size()}
