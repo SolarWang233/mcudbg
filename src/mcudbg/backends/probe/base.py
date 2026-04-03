@@ -86,3 +86,6 @@ class ProbeBackend(ABC):
 
     def clear_all_watchpoints(self) -> dict[str, Any]:
         raise NotImplementedError
+
+    def read_fpu_registers(self) -> dict[str, Any]:
+        raise NotImplementedError

@@ -274,3 +274,18 @@ class PyOcdProbeBackend(ProbeBackend):
             'summary': f'Cleared {cleared} watchpoint(s).',
             'cleared_count': cleared,
         }
+
+    def read_fpu_registers(self) -> dict[str, Any]:
+        self._require_target()
+        result: dict[str, Any] = {}
+        for index in range(32):
+            name = f"s{index}"
+            try:
+                result[name] = self._target.read_core_register(name)
+            except Exception:
+                result[name] = None
+        try:
+            result["fpscr"] = self._target.read_core_register("fpscr")
+        except Exception:
+            result["fpscr"] = None
+        return result

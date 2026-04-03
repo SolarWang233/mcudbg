@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import operator as _op
+
 from ..session import SessionState
 
 
@@ -269,6 +271,204 @@ def remove_watchpoint(session: SessionState, address: int) -> dict:
 
 def clear_all_watchpoints(session: SessionState) -> dict:
     return session.probe.clear_all_watchpoints()
+
+
+def read_fpu_registers(session: SessionState) -> dict:
+    try:
+        values = session.probe.read_fpu_registers()
+    except NotImplementedError:
+        return {
+            "status": "error",
+            "summary": "Active probe backend does not support FPU register reads.",
+        }
+    return {
+        "status": "ok",
+        "summary": "Read FPU registers.",
+        "registers": {
+            name: hex(value) if value is not None else None
+            for name, value in values.items()
+        },
+    }
+
+
+_MPU_TYPE = 0xE000ED90
+_MPU_CTRL = 0xE000ED94
+_MPU_RNR = 0xE000ED98
+_MPU_RBAR = 0xE000ED9C
+_MPU_RASR = 0xE000EDA0
+
+_AP_DESC = {
+    0b000: "privileged_no_access_unprivileged_no_access",
+    0b001: "privileged_rw_unprivileged_no_access",
+    0b010: "privileged_rw_unprivileged_ro",
+    0b011: "privileged_rw_unprivileged_rw",
+    0b100: "reserved",
+    0b101: "privileged_ro_unprivileged_no_access",
+    0b110: "privileged_ro_unprivileged_ro",
+    0b111: "reserved",
+}
+
+
+def read_mpu_regions(session: SessionState) -> dict:
+    mpu_type = int.from_bytes(session.probe.read_memory(_MPU_TYPE, 4), "little")
+    mpu_ctrl = int.from_bytes(session.probe.read_memory(_MPU_CTRL, 4), "little")
+    dregion = (mpu_type >> 8) & 0xFF
+    regions: list[dict[str, int | bool | str]] = []
+
+    for index in range(dregion):
+        session.probe.write_memory(_MPU_RNR, index.to_bytes(4, "little"))
+        rbar = int.from_bytes(session.probe.read_memory(_MPU_RBAR, 4), "little")
+        rasr = int.from_bytes(session.probe.read_memory(_MPU_RASR, 4), "little")
+        region_enable = bool(rasr & 0x1)
+        size_field = (rasr >> 1) & 0x1F
+        srd = (rasr >> 8) & 0xFF
+        ap = (rasr >> 24) & 0x7
+        xn = bool((rasr >> 28) & 0x1)
+        size_bytes = (1 << (size_field + 1)) if size_field >= 4 else 0
+        base_addr = rbar & ~0x1F
+        regions.append(
+            {
+                "index": index,
+                "enabled": region_enable,
+                "base_address": hex(base_addr),
+                "rbar": hex(rbar),
+                "rasr": hex(rasr),
+                "size_field": size_field,
+                "size_bytes": size_bytes,
+                "subregion_disable_mask": hex(srd),
+                "access_permission_bits": ap,
+                "access_permission": _AP_DESC.get(ap, "unknown"),
+                "execute_never": xn,
+            }
+        )
+
+    return {
+        "status": "ok",
+        "summary": f"Read MPU configuration with {dregion} region slot(s).",
+        "mpu": {
+            "type": hex(mpu_type),
+            "control": hex(mpu_ctrl),
+            "enabled": bool(mpu_ctrl & 0x1),
+            "privdefena": bool((mpu_ctrl >> 2) & 0x1),
+            "dregion": dregion,
+        },
+        "regions": regions,
+    }
+
+
+_OPS = {
+    "eq": _op.eq,
+    "ne": _op.ne,
+    "lt": _op.lt,
+    "gt": _op.gt,
+    "le": _op.le,
+    "ge": _op.ge,
+}
+
+
+def continue_until(
+    session: SessionState,
+    address: int,
+    condition_symbol: str | None = None,
+    condition_register: str | None = None,
+    condition_op: str = "eq",
+    condition_value: int = 0,
+    max_hits: int = 20,
+    timeout_seconds: float = 5.0,
+) -> dict:
+    if condition_op not in _OPS:
+        return {
+            "status": "error",
+            "summary": f"Invalid condition_op '{condition_op}'. Use one of: {', '.join(sorted(_OPS))}.",
+        }
+    if condition_symbol and condition_register:
+        return {
+            "status": "error",
+            "summary": "Provide either condition_symbol or condition_register, not both.",
+        }
+
+    target_address = int(address) & ~1
+    condition_fn = _OPS[condition_op]
+    set_breakpoint(session, address=target_address)
+
+    try:
+        for hit_count in range(1, max_hits + 1):
+            result = continue_target(
+                session,
+                timeout_seconds=timeout_seconds,
+                poll_interval_ms=50,
+            )
+            if result.get("stop_reason") == "timeout":
+                session.probe.clear_breakpoint(target_address)
+                result["summary"] = "Timed out before condition was met; breakpoint cleared."
+                result["condition_met"] = False
+                result["hit_count"] = hit_count - 1
+                result["breakpoint_address"] = hex(target_address)
+                return result
+
+            core = session.probe.read_core_registers()
+            pc = int(core["pc"]) & ~1
+            if pc not in {target_address, target_address + 2, target_address + 4}:
+                continue
+
+            observed_value = condition_value
+            observed_from = None
+            if condition_symbol is not None:
+                if not session.elf.is_loaded:
+                    raise ValueError("ELF must be loaded before using condition_symbol")
+                resolved = session.elf.resolve_symbol(condition_symbol)
+                if resolved["address"] is None:
+                    raise ValueError(f"symbol '{condition_symbol}' could not be resolved")
+                symbol_address = int(resolved["address"], 16)
+                raw = session.probe.read_memory(symbol_address, 4)
+                observed_value = int.from_bytes(raw, "little")
+                observed_from = {"symbol": condition_symbol, "address": hex(symbol_address)}
+            elif condition_register is not None:
+                registers = session.probe.read_core_registers()
+                if condition_register not in registers:
+                    raise ValueError(f"register '{condition_register}' is not available")
+                observed_value = int(registers[condition_register])
+                observed_from = {"register": condition_register}
+
+            if condition_fn(observed_value, condition_value):
+                session.probe.clear_breakpoint(target_address)
+                result.update(
+                    {
+                        "summary": "Condition met at breakpoint; breakpoint cleared.",
+                        "condition_met": True,
+                        "hit_count": hit_count,
+                        "breakpoint_address": hex(target_address),
+                        "condition": {
+                            "op": condition_op,
+                            "expected": hex(condition_value),
+                            "actual": hex(observed_value),
+                            **(observed_from or {}),
+                        },
+                    }
+                )
+                return result
+
+        session.probe.clear_breakpoint(target_address)
+        return {
+            "status": "ok",
+            "summary": "Maximum breakpoint hits reached before condition was met; breakpoint cleared.",
+            "stop_reason": "max_hits_reached",
+            "condition_met": False,
+            "hit_count": max_hits,
+            "breakpoint_address": hex(target_address),
+        }
+    except Exception as exc:
+        try:
+            session.probe.clear_breakpoint(target_address)
+        except Exception:
+            pass
+        return {
+            "status": "error",
+            "summary": str(exc),
+            "stop_reason": "error",
+            "condition_met": False,
+            "breakpoint_address": hex(target_address),
+        }
 
 
 def read_registers(session: SessionState) -> dict:

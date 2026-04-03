@@ -37,6 +37,8 @@ from .tools.probe import disconnect_probe as _disconnect_probe
 from .tools.probe import halt_target as _halt_target
 from .tools.probe import list_connected_probes as _list_connected_probes
 from .tools.probe import read_memory as _read_memory
+from .tools.probe import read_fpu_registers as _read_fpu_registers
+from .tools.probe import read_mpu_regions as _read_mpu_regions
 from .tools.probe import read_registers as _read_registers
 from .tools.probe import read_symbol_value as _read_symbol_value
 from .tools.probe import read_stopped_context as _read_stopped_context
@@ -45,6 +47,7 @@ from .tools.probe import resume_target as _resume_target
 from .tools.probe import set_watchpoint as _set_watchpoint
 from .tools.probe import remove_watchpoint as _remove_watchpoint
 from .tools.probe import clear_all_watchpoints as _clear_all_watchpoints
+from .tools.probe import continue_until as _continue_until
 from .tools.probe import set_breakpoint as _set_breakpoint
 from .tools.probe import step_instruction as _step_instruction
 from .tools.probe import write_memory as _write_memory
@@ -292,6 +295,38 @@ async def probe_clear_all_watchpoints() -> dict:
 @mcp.tool()
 async def probe_read_registers() -> dict:
     return _read_registers(session)
+
+
+@mcp.tool()
+async def probe_read_fpu_registers() -> dict:
+    return _read_fpu_registers(session)
+
+
+@mcp.tool()
+async def probe_read_mpu_regions() -> dict:
+    return _read_mpu_regions(session)
+
+
+@mcp.tool()
+async def probe_continue_until(
+    address: int,
+    condition_symbol: str | None = None,
+    condition_register: str | None = None,
+    condition_op: str = "eq",
+    condition_value: int = 0,
+    max_hits: int = 20,
+    timeout_seconds: float = 5.0,
+) -> dict:
+    return _continue_until(
+        session,
+        address=address,
+        condition_symbol=condition_symbol,
+        condition_register=condition_register,
+        condition_op=condition_op,
+        condition_value=condition_value,
+        max_hits=max_hits,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 @mcp.tool()
