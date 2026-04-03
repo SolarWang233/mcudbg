@@ -231,6 +231,45 @@ def dump_memory(
     return result
 
 
+def memory_find(
+    session: SessionState,
+    address: int,
+    size: int,
+    pattern: list[int],
+    max_results: int = 16,
+) -> dict:
+    try:
+        data = session.probe.read_memory(address, size)
+    except Exception as e:
+        return {"status": "error", "summary": str(e)}
+
+    needle = bytes(pattern)
+    if not needle:
+        return {"status": "error", "summary": "Pattern must not be empty."}
+
+    matches: list[int] = []
+    start = 0
+    while True:
+        offset = data.find(needle, start)
+        if offset == -1:
+            break
+        matches.append(offset)
+        start = offset + len(needle)
+
+    truncated = len(matches) > max_results
+    visible_matches = matches[:max_results]
+    pattern_bytes = [hex(b) for b in pattern]
+    return {
+        "status": "ok",
+        "summary": f"Found {len(matches)} match(es) for pattern {pattern_bytes} in {hex(address)}+{size}.",
+        "address": hex(address),
+        "pattern_bytes": pattern_bytes,
+        "match_count": len(matches),
+        "matches": [{"address": hex(address + off), "offset": off} for off in visible_matches],
+        "truncated": truncated,
+    }
+
+
 def memory_snapshot(session: SessionState, address: int, size: int, label: str = "default") -> dict:
     """Capture a memory snapshot and store it under label for later diff."""
     try:
@@ -1334,6 +1373,176 @@ def run_to_source(
         "source": f"{src['file']}:{src['line']}" if src["file"] else None,
         "symbol": sym,
         "stop_reason": result.get("stop_reason"),
+    }
+
+
+def rtos_task_context(
+    session: SessionState,
+    task_name: str,
+    task_name_len: int = 16,
+) -> dict:
+    """Read saved register context of a blocked/suspended FreeRTOS task.
+
+    Parses the Cortex-M4F context switch stack frame from pxTopOfStack.
+    Software frame (STMDB {R4-R11, LR}): R4-R11 at +0..+28, EXC_RETURN at +32.
+    If FPU was active (EXC_RETURN bit 4 = 0), S16-S31 precede the software frame (+64 offset).
+    Hardware frame follows: R0-R3, R12, LR, PC, xPSR.
+    If the named task is currently running, returns live registers instead.
+    Requires ELF loaded and probe connected.
+    """
+    if not session.elf.is_loaded:
+        return {"status": "error", "summary": "ELF not loaded."}
+
+    def _sym(name: str) -> int | None:
+        r = session.elf.resolve_symbol(name)
+        return int(r["address"], 16) if r["address"] is not None else None
+
+    def read32(addr: int) -> int:
+        return int.from_bytes(session.probe.read_memory(addr, 4), "little")
+
+    # --- walk all FreeRTOS lists to collect TCB addresses ---
+    LIST_ITEM_NEXT = 4
+    LIST_ITEM_OWNER = 12
+
+    def walk_list(list_addr: int) -> list[int]:
+        owners: list[int] = []
+        try:
+            n = read32(list_addr)
+            if n == 0 or n > 512:
+                return owners
+            end_addr = list_addr + 8
+            cur = read32(end_addr + LIST_ITEM_NEXT)
+            for _ in range(min(n, 512)):
+                if cur == 0 or cur == end_addr:
+                    break
+                owner = read32(cur + LIST_ITEM_OWNER)
+                if owner:
+                    owners.append(owner)
+                cur = read32(cur + LIST_ITEM_NEXT)
+        except Exception:
+            pass
+        return owners
+
+    all_tcbs: set[int] = set()
+    ready_ptr = _sym("pxReadyTasksLists")
+    if ready_ptr:
+        for pri in range(32):
+            for a in walk_list(ready_ptr + pri * 20):
+                all_tcbs.add(a)
+    for sym in ("xDelayedTaskList1", "xDelayedTaskList2", "xSuspendedTaskList"):
+        ptr = _sym(sym)
+        if ptr:
+            for a in walk_list(ptr):
+                all_tcbs.add(a)
+
+    current_tcb_ptr = _sym("pxCurrentTCB")
+    current_tcb: int | None = None
+    try:
+        if current_tcb_ptr:
+            current_tcb = read32(current_tcb_ptr)
+            all_tcbs.add(current_tcb)
+    except Exception:
+        pass
+
+    # --- find TCB matching task_name ---
+    TCB_NAME = 0x34
+    target_tcb: int | None = None
+    for tcb_addr in all_tcbs:
+        try:
+            raw = session.probe.read_memory(tcb_addr + TCB_NAME, task_name_len)
+            name = raw.split(b"\x00")[0].decode("utf-8", errors="replace")
+            if name == task_name:
+                target_tcb = tcb_addr
+                break
+        except Exception:
+            continue
+
+    if target_tcb is None:
+        return {"status": "error", "summary": f"Task '{task_name}' not found in FreeRTOS task lists."}
+
+    # --- running task: return live registers ---
+    if target_tcb == current_tcb:
+        try:
+            core = session.probe.read_core_registers()
+            regs = {k: hex(v) for k, v in core.items()}
+            resolved = session.elf.resolve_address(core["pc"] & ~1)
+            return {
+                "status": "ok",
+                "summary": f"Task '{task_name}' is currently running — live registers returned.",
+                "task_name": task_name,
+                "tcb_address": hex(target_tcb),
+                "state": "running",
+                "fpu_context": False,
+                "registers": regs,
+                "pc_symbol": resolved.get("symbol"),
+                "source": resolved.get("source"),
+            }
+        except Exception as e:
+            return {"status": "error", "summary": str(e)}
+
+    # --- blocked/suspended task: parse saved Cortex-M4F context frame ---
+    # ARM_CM4F port layout (STMDB {R4-R11, LR} then hardware frame):
+    #   no-FPU (EXC_RETURN bit4=1): SW frame at +0, EXC_RETURN at +32, HW frame at +36
+    #   FPU    (EXC_RETURN bit4=0): S16-S31 at +0..+63, SW frame at +64, EXC_RETURN at +96, HW frame at +100
+    try:
+        tos = read32(target_tcb)  # pxTopOfStack is first TCB field
+
+        # Detect FPU by checking EXC_RETURN at both possible positions
+        exc_nofpu = read32(tos + 32)
+        exc_fpu   = read32(tos + 96)
+        is_exc = lambda v: (v & 0xFFFFFF00) == 0xFFFFFF00  # noqa: E731
+
+        if is_exc(exc_nofpu):
+            sw_base = tos
+            exc_return = exc_nofpu
+            fpu_active = (exc_return & 0x10) == 0
+        elif is_exc(exc_fpu):
+            sw_base = tos + 64          # S16-S31 precede the SW frame
+            exc_return = exc_fpu
+            fpu_active = True
+        else:
+            sw_base = tos               # fallback: assume no FPU
+            exc_return = exc_nofpu
+            fpu_active = False
+
+        hw_base = sw_base + 36          # 9 words: R4-R11 (8) + EXC_RETURN (1)
+
+        r4  = read32(sw_base +  0);  r5  = read32(sw_base +  4)
+        r6  = read32(sw_base +  8);  r7  = read32(sw_base + 12)
+        r8  = read32(sw_base + 16);  r9  = read32(sw_base + 20)
+        r10 = read32(sw_base + 24);  r11 = read32(sw_base + 28)
+
+        r0   = read32(hw_base +  0);  r1  = read32(hw_base +  4)
+        r2   = read32(hw_base +  8);  r3  = read32(hw_base + 12)
+        r12  = read32(hw_base + 16);  lr  = read32(hw_base + 20)
+        pc   = read32(hw_base + 24) & ~1
+        xpsr = read32(hw_base + 28)
+
+        # SP as it was at context switch (after popping full hw frame)
+        # Extended hw frame (FPU): 8 std + S0-S15(16) + FPSCR(1) + pad(1) = 26 words = 104 B
+        sp = hw_base + (104 if fpu_active else 32)
+
+    except Exception as e:
+        return {"status": "error", "summary": f"Failed to parse context frame: {e}"}
+
+    resolved = session.elf.resolve_address(pc)
+    return {
+        "status": "ok",
+        "summary": f"Parsed saved context for task '{task_name}': PC={hex(pc)} ({resolved.get('symbol') or 'unknown'}).",
+        "task_name": task_name,
+        "tcb_address": hex(target_tcb),
+        "state": "blocked_or_suspended",
+        "fpu_context": fpu_active,
+        "exc_return": hex(exc_return),
+        "registers": {
+            "r0": hex(r0), "r1": hex(r1), "r2": hex(r2), "r3": hex(r3),
+            "r4": hex(r4), "r5": hex(r5), "r6": hex(r6), "r7": hex(r7),
+            "r8": hex(r8), "r9": hex(r9), "r10": hex(r10), "r11": hex(r11),
+            "r12": hex(r12), "sp": hex(sp), "lr": hex(lr), "pc": hex(pc),
+            "xpsr": hex(xpsr),
+        },
+        "pc_symbol": resolved.get("symbol"),
+        "source": resolved.get("source"),
     }
 
 

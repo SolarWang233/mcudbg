@@ -226,6 +226,73 @@ class SvdManager:
             'value': hex(value),
         }
 
+    def write_field(
+        self,
+        peripheral_name: str,
+        register_name: str,
+        field_name: str,
+        value: int,
+        probe: Any,
+    ) -> dict[str, Any]:
+        try:
+            periph = self._resolve_peripheral(peripheral_name)
+            if periph is None:
+                return self._peripheral_not_found(peripheral_name)
+
+            registers = self._collect_registers(periph)
+            reg = next((r for r in registers if r["name"].upper() == register_name.upper()), None)
+            if reg is None:
+                available = [r["name"] for r in registers]
+                return {
+                    "status": "error",
+                    "summary": f"Register '{register_name}' not found in {periph.name}.",
+                    "available_registers": available,
+                }
+
+            field = next((f for f in reg["fields"] if f["name"].upper() == field_name.upper()), None)
+            if field is None:
+                return {
+                    "status": "error",
+                    "summary": f"Field '{field_name}' not found in {periph.name}.{reg['name']}.",
+                    "available_fields": [f["name"] for f in reg["fields"]],
+                }
+
+            field_width = int(field["bit_width"])
+            if value < 0 or value >= (1 << field_width):
+                return {
+                    "status": "error",
+                    "summary": (
+                        f"Value {value} does not fit in field {periph.name}.{reg['name']}.{field['name']} "
+                        f"(width={field_width})."
+                    ),
+                }
+
+            addr = periph.base_address + reg["offset"]
+            raw = probe.read_memory(addr, 4)
+            current = int.from_bytes(raw, "little")
+
+            mask = ((1 << field_width) - 1) << field["bit_offset"]
+            new_val = (current & ~mask) | ((value & ((1 << field_width) - 1)) << field["bit_offset"])
+
+            probe.write_memory(addr, new_val.to_bytes(4, "little"))
+
+            return {
+                "status": "ok",
+                "summary": (
+                    f"Set {periph.name}.{reg['name']}.{field['name']} = {value} "
+                    f"(wrote {hex(new_val)} to {hex(addr)})."
+                ),
+                "peripheral": periph.name,
+                "register": reg["name"],
+                "field": field["name"],
+                "address": hex(addr),
+                "old_register_value": hex(current),
+                "new_register_value": hex(new_val),
+                "field_value": value,
+            }
+        except Exception as e:
+            return {"status": "error", "summary": str(e)}
+
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #

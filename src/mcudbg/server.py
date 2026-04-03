@@ -21,6 +21,7 @@ from .tools.svd import svd_list_peripherals as _svd_list_peripherals
 from .tools.svd import svd_get_registers as _svd_get_registers
 from .tools.svd import svd_read_peripheral as _svd_read_peripheral
 from .tools.svd import svd_write_register as _svd_write_register
+from .tools.svd import svd_write_field as _svd_write_field
 from .tools.phase3 import diagnose_clock_issue as _diagnose_clock_issue
 from .tools.phase3 import diagnose_interrupt_issue as _diagnose_interrupt_issue
 from .tools.phase3 import diagnose_peripheral_stuck as _diagnose_peripheral_stuck
@@ -37,7 +38,9 @@ from .tools.probe import disconnect_probe as _disconnect_probe
 from .tools.probe import halt_target as _halt_target
 from .tools.probe import list_connected_probes as _list_connected_probes
 from .tools.probe import diagnose_memory_corruption as _diagnose_memory_corruption
+from .tools.probe import memory_find as _memory_find
 from .tools.probe import list_rtos_tasks as _list_rtos_tasks
+from .tools.probe import rtos_task_context as _rtos_task_context
 from .tools.probe import read_rtt_log as _read_rtt_log
 from .tools.probe import dump_memory as _dump_memory
 from .tools.probe import memory_snapshot as _memory_snapshot
@@ -399,6 +402,19 @@ async def dump_memory(
 
 
 @mcp.tool()
+async def memory_find(address: int, size: int, pattern: list[int], max_results: int = 16) -> dict:
+    """Search a memory region for a byte pattern.
+
+    Returns all non-overlapping match addresses. Useful for finding magic numbers,
+    string literals, or corrupted canary values in RAM.
+    pattern: list of byte values, e.g. [0xDE, 0xAD, 0xBE, 0xEF]
+    Example: memory_find(0x20000000, 0x10000, [0xDE, 0xAD, 0xBE, 0xEF])
+    Example: memory_find(0x20000000, 0x10000, [0x53, 0x45, 0x47, 0x47, 0x45, 0x52])
+    """
+    return _memory_find(session, address=address, size=size, pattern=pattern, max_results=max_results)
+
+
+@mcp.tool()
 async def diagnose_memory_corruption(stack_canary: int = 0xCCCCCCCC) -> dict:
     """Scan stack and heap regions for corruption evidence.
 
@@ -425,6 +441,22 @@ async def list_rtos_tasks(max_priorities: int = 32, task_name_len: int = 16) -> 
     Requires ELF loaded and probe connected with target halted.
     """
     return _list_rtos_tasks(session, max_priorities=max_priorities, task_name_len=task_name_len)
+
+
+@mcp.tool()
+async def rtos_task_context(task_name: str, task_name_len: int = 16) -> dict:
+    """Read the saved register context of a blocked or suspended FreeRTOS task.
+
+    Parses the Cortex-M4F context switch stack frame stored in the task's TCB.
+    Reconstructs R0-R12, SP, LR, PC, xPSR and resolves PC to a symbol/source line.
+    Automatically detects whether FPU context was saved (EXC_RETURN bit 4).
+    If the named task is currently running, returns live register values instead.
+
+    task_name: exact task name as passed to xTaskCreate (case-sensitive).
+    task_name_len: configMAX_TASK_NAME_LEN in your FreeRTOS build (default 16).
+    Requires ELF loaded and probe connected with target halted.
+    """
+    return _rtos_task_context(session, task_name=task_name, task_name_len=task_name_len)
 
 
 @mcp.tool()
@@ -640,6 +672,18 @@ async def svd_write_register(peripheral: str, register: str, value: int) -> dict
     Example: svd_write_register('GPIOA', 'ODR', 0x0001)
     """
     return _svd_write_register(session, peripheral=peripheral, register=register, value=value)
+
+
+@mcp.tool()
+async def svd_write_field(peripheral: str, register: str, field: str, value: int) -> dict:
+    """Write a value to a single bit-field in a peripheral register (read-modify-write).
+
+    Reads the current register value, updates only the target field bits, writes back.
+    Safer than svd_write_register when you only want to change one field.
+    Example: svd_write_field('RCC', 'CR', 'PLLON', 1)
+    Example: svd_write_field('GPIOA', 'MODER', 'MODER5', 2)
+    """
+    return _svd_write_field(session, peripheral=peripheral, register=register, field=field, value=value)
 
 
 @mcp.tool()

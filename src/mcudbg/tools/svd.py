@@ -36,3 +36,15 @@ def svd_write_register(session: SessionState, peripheral: str, register: str, va
     if not session.svd.is_loaded:
         return {'status': 'error', 'summary': 'No SVD file loaded. Call svd_load first.'}
     return session.svd.write_register(peripheral, register, value, session.probe)
+
+
+def svd_write_field(
+    session: SessionState,
+    peripheral: str,
+    register: str,
+    field: str,
+    value: int,
+) -> dict:
+    if not session.svd.is_loaded:
+        return {"status": "error", "summary": "No SVD file loaded. Call svd_load first."}
+    return session.svd.write_field(peripheral, register, field, value, session.probe)
