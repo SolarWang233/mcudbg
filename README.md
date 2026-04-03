@@ -1,198 +1,74 @@
 # mcudbg
 
-**Let AI debug your embedded board.**
-
-`mcudbg` is an MCP server for embedded debugging. It gives AI assistants direct access to the things that matter on real hardware: debug probes, CPU registers, memory, ELF/DWARF symbols, UART logs, and peripheral registers.
+**AI-native debugging and observability for embedded boards.**
 
 > Human connects the wires. AI debugs the board.
 
-## What mcudbg is for
+`mcudbg` is an [MCP](https://modelcontextprotocol.io/) server that gives AI assistants direct access to debug probes, CPU registers, memory, ELF/DWARF symbols, UART logs, SVD peripheral registers, and RTOS state on real hardware.
 
-Most AI coding tools stop at generating firmware. Real embedded failures happen after flashing:
+Most AI coding tools stop at generating firmware. `mcudbg` picks up where they leave off — when the board doesn't boot, the UART is silent, or the firmware crashes into HardFault.
 
-- the board does not boot
-- there is no UART output
-- the firmware crashes into `HardFault`
-- a peripheral is configured wrong
-- execution is stuck in startup code, an ISR, or a loop
+<!-- TODO: replace with actual demo GIF -->
+<!-- ![demo](docs/demo.gif) -->
 
-`mcudbg` is built so an AI assistant can observe the board, inspect evidence, and guide the next debugging step instead of guessing from source code alone.
+## Quick demo
 
-## Current capabilities
+```text
+User:  This board doesn't boot after power-on. Help me check.
 
-### Probe and execution control
+AI:    Connecting probe… halting target… reading registers…
+       PC = 0x08001A3C → HardFault_Handler (startup.s:42)
+       CFSR = 0x00008200 — precise data bus fault
+       BFAR = 0x00000000 — null pointer dereference
+       The firmware hit a null pointer during sensor_init().
+       Suggestion: check the I2C handle passed to HAL_I2C_Init().
+```
 
-- connect to `pyOCD`-supported probes such as ST-Link and CMSIS-DAP
-- halt, resume, reset, single-step, step over, and step out
-- set and clear breakpoints by symbol or address
-- set hardware watchpoints
-- continue until an address or condition is hit
-- erase, program, and verify flash ranges from MCP
-- start, stop, and inspect a `pyOCD` GDB server process
+## Features
+
+### Probe backends
+
+| Backend | Status |
+|---------|--------|
+| pyOCD (ST-Link, CMSIS-DAP) | Fully supported |
+| J-Link (via pylink-square) | Fully supported |
+
+Both backends support: connect, halt, resume, reset, single-step, breakpoints, watchpoints, memory read/write, flash erase/program/verify, FPU and fault registers.
 
 ### ELF and DWARF
 
-- load ELF or AXF files for symbol resolution
-- resolve addresses to function names and source lines
-- source-level single step with `.debug_line`
-- run directly to a source line or function
-- disassemble code with source annotations
-- list functions and inspect individual symbols
-- read locals with DWARF debug info
-- build heuristic and DWARF-based backtraces
+Load ELF/AXF files for symbol resolution, source-level stepping, disassembly with source annotations, function listing, local variable inspection, and backtrace.
 
-### Memory and state inspection
+### SVD peripheral inspection
 
-- read and write target memory
-- dump memory in multiple formats
-- snapshot memory and diff it later
-- find byte patterns in RAM
-- compare ELF sections against flash contents
-- inspect stopped CPU context, FPU registers, and MPU regions
-- read symbol values directly from target memory
+Load CMSIS-SVD files to decode peripheral registers, inspect clock gating, and diagnose misconfigured peripherals with field-level read-modify-write.
 
-### SVD-based peripheral inspection
+### Symptom-driven diagnosis
 
-- load CMSIS-SVD files
-- list peripherals and register layouts
-- read decoded peripheral register state from hardware
-- write full registers or individual fields with read-modify-write
-- diagnose common peripheral issues such as clock gating or bad pin config
+Tell the AI what's wrong. It decides what to check.
 
-### Diagnosis tools
+| Tool | Use case |
+|------|----------|
+| `diagnose("board won't boot")` | Routes to the right diagnostic path |
+| `diagnose_hardfault` | Fault register decode + PC resolution |
+| `diagnose_startup_failure` | Log + execution state analysis |
+| `diagnose_peripheral_stuck` | Clock gating, pin mux, enable bits |
+| `diagnose_memory_corruption` | Stack overflow, buffer overrun |
+| `diagnose_interrupt_issue` | NVIC priority, enable, pending |
+| `diagnose_clock_issue` | PLL, HSE, system clock tree |
+| `diagnose_stack_overflow` | SP vs stack bounds, canary check |
 
-- `diagnose`
-- `diagnose_hardfault`
-- `diagnose_startup_failure`
-- `diagnose_memory_corruption`
-- `diagnose_stack_overflow`
-- `diagnose_interrupt_issue`
-- `diagnose_clock_issue`
-- `diagnose_peripheral_stuck`
+### RTOS and RTT
 
-### RTOS and RTT entry points
-
-- FreeRTOS task listing and task-context inspection
-- Segger RTT log scanning and reading
-
-These tools are implemented. They still require a matching firmware image to validate on hardware.
+FreeRTOS task listing and per-task context inspection. Segger RTT log scanning and reading.
 
 ### Build and flash
 
-- Keil UV4 build integration
-- Keil UV4 flash integration
-- combined debug loop support from MCP
+Keil UV4 build and flash integration. Full debug loop: diagnose → fix code → build → flash → verify.
 
-## Real hardware status
+### GDB server
 
-The project has been exercised on real hardware, not just mocks.
-
-Validated setup:
-
-- target: `STM32L496VETx`
-- board: `ATK_PICTURE`
-- probe: `ST-Link`
-- ELF: `ATK_PICTURE.axf`
-
-Confirmed on hardware:
-
-- ELF loading and symbol resolution
-- DWARF source mapping
-- `source_step`
-- `run_to_function`
-- `elf_symbol_info`
-- `set_breakpoints_for_function_range`
-- `disassemble`
-- `read_memory_map`
-- `probe_read_mpu_regions`
-- `probe_set_watchpoint`
-- `probe_remove_watchpoint`
-- `probe_clear_all_watchpoints`
-- `probe_read_fpu_registers`
-- `erase_flash`
-- `program_flash`
-- `verify_flash`
-- `start_gdb_server`
-- `get_gdb_server_status`
-- `stop_gdb_server`
-- `read_rtt_log`
-- `list_rtos_tasks`
-- `rtos_task_context`
-- `diagnose(symptom)`
-
-Recent flash validation result on the STM32L496 board:
-
-- `verify_flash()` matched the current image header at `0x08000000`
-- a reversible scratch-sector test at `0x08010000` succeeded:
-  `erase_flash()` returned all `0xFF`
-  `program_flash()` wrote a 64-byte test pattern
-  `verify_flash()` matched the programmed bytes
-  a second `program_flash()` restored 64 bytes of `0x00`
-- after the flash test, the board still booted and RTT continued to print:
-  `FreeRTOS demo boot`
-  `Starting scheduler`
-  `RTTTask alive count=...`
-
-Current firmware-specific gaps:
-
-- richer RTOS scenarios beyond the current demo, such as mutex contention and ISR-to-task signaling, still benefit from more validation
-
-Recent RTT validation result on the STM32L496 board:
-
-- `read_rtt_log()` found the RTT control block at `0x20012b38`
-- channel `0` was readable with `buffer_size = 1024`
-- captured text included:
-  `mcudbg RTT ready`
-  `board=ATK_PICTURE target=STM32L496VETx`
-  `mcudbg RTT waiting: open 0:/PICTURE`
-
-Recent FreeRTOS validation result on the same board:
-
-- switched the demo firmware to a minimal FreeRTOS image with `RTTTask` and `LEDTask`
-- `list_rtos_tasks()` found 3 tasks:
-  `RTTTask`, `LEDTask`, `IDLE`
-- `rtos_task_context('LEDTask')` resolved blocked context at `vTaskDelay`
-- `rtos_task_context('RTTTask')` resolved blocked context at `vTaskDelay`
-- `rtos_task_context('IDLE')` returned live running registers at `prvCheckTasksWaitingTermination`
-
-Recent richer FreeRTOS validation result on the same board:
-
-- expanded the demo firmware to 5 application tasks plus `IDLE`
-- `read_rtt_log()` captured queue and semaphore activity:
-  `ProducerTask sent value=...`
-  `ConsumerTask received value=...`
-  `WorkerTask took semaphore`
-- `list_rtos_tasks()` found 6 tasks:
-  `RTTTask`, `ProducerTask`, `ConsumerTask`, `WorkerTask`, `LEDTask`, `IDLE`
-- `rtos_task_context('ConsumerTask')` resolved to `xQueueGenericReceive`
-- `rtos_task_context('WorkerTask')` resolved to `vTaskDelay`
-- `ConsumerTask` appearing in the suspended list is expected for an indefinite wait with `portMAX_DELAY` on this FreeRTOS configuration
-
-Recent timer-service validation result on the same board:
-
-- enabled FreeRTOS software timers and added a periodic `DemoTimer`
-- RTT now captures timer callbacks:
-  `TimerCallback fired count=...`
-- `list_rtos_tasks()` found 7 tasks including `Tmr Svc`
-- `rtos_task_context('Tmr Svc')` resolved blocked context at `prvProcessTimerOrBlockTask`
-- source resolution reached `..\FreeRTOS\timers.c:489`
-
-Recent diagnosis-router validation result on the same board:
-
-- `diagnose("board does not boot", include_logs=False, auto_halt=True)` routed to `diagnose_startup_failure`
-- the returned symbol context included:
-  `pc_symbol = prvCheckTasksWaitingTermination`
-  `source = ..\FreeRTOS\tasks.c:3031`
-
-Recent GDB server validation result on the same board:
-
-- `start_gdb_server()` successfully launched `pyOCD gdbserver`
-- `get_gdb_server_status()` reported:
-  `host = 127.0.0.1`
-  `port = 3333`
-  `state = running`
-  `target = stm32l496vetx`
-- `stop_gdb_server()` shut the background process down cleanly
+Start, stop, and inspect a pyOCD GDB server process from MCP.
 
 ## Installation
 
@@ -208,68 +84,51 @@ cd mcudbg
 pip install -e .
 ```
 
-Requirements:
+**Requirements:** Python 3.10+, a supported debug probe, and an ELF/AXF with debug symbols.
 
-- Python 3.10+
-- a `pyOCD`-supported debug probe
-- an ELF or AXF with debug symbols for symbol-aware features
-- a CMSIS-SVD file for peripheral register inspection
+**Optional:** CMSIS-SVD file for peripheral register decoding. J-Link backend requires `pylink-square`.
 
 ## MCP configuration
 
-### Claude Desktop on Windows
+### Claude Desktop / Claude Code
 
 ```json
 {
   "mcpServers": {
     "mcudbg": {
       "command": "python",
-      "args": ["-m", "mcudbg"],
-      "cwd": "C:/path/to/mcudbg"
+      "args": ["-m", "mcudbg"]
     }
   }
 }
 ```
 
-### Claude Desktop on macOS or Linux
-
-```json
-{
-  "mcpServers": {
-    "mcudbg": {
-      "command": "python3",
-      "args": ["-m", "mcudbg"],
-      "cwd": "/path/to/mcudbg"
-    }
-  }
-}
-```
+On macOS/Linux, use `python3` instead of `python`.
 
 ## Quick start
 
-### 1. Discover and connect the probe
+### 1. Connect probe and load symbols
 
 ```python
-list_connected_probes()
-probe_connect(target="stm32l496vetx", unique_id="YOUR_PROBE_ID")
+probe_connect(target="stm32l496vetx", backend="pyocd")
+elf_load("firmware.axf")
+svd_load("STM32L4x6.svd")  # optional
 ```
 
-### 2. Load symbols and optional SVD
+For J-Link:
 
 ```python
-elf_load("D:/path/to/firmware.axf")
-svd_load("D:/path/to/STM32L4x6.svd")
+probe_connect(target="STM32F103C8", backend="jlink", unique_id="240710115")
 ```
 
-### 3. Inspect where the CPU is stopped
+### 2. Inspect where the CPU is
 
 ```python
 probe_halt()
 read_stopped_context()
-elf_addr_to_source(0x08001234)
 ```
 
-### 4. Step at source level
+### 3. Source-level debugging
 
 ```python
 run_to_function("main")
@@ -278,177 +137,130 @@ step_over()
 step_out()
 ```
 
-### 5. Inspect peripherals and memory
+### 4. Inspect peripherals and memory
 
 ```python
 svd_read_peripheral("USART2")
-svd_write_field("RCC", "CR", "PLLON", 1)
 dump_memory(0x20000000, 64)
 read_symbol_value("SystemCoreClock", 4)
 ```
 
-### 6. Diagnose failures
+### 5. Diagnose failures
 
 ```python
-diagnose("board does not boot")
-diagnose_startup_failure()
+diagnose("UART2 has no output")
 diagnose_hardfault()
-diagnose_peripheral_stuck("USART2", "no output from TX pin")
-diagnose_memory_corruption()
 ```
 
-### 7. Erase, program, and verify flash
+### 6. Flash operations
 
 ```python
 erase_flash(start_address=0x08010000, end_address=0x08010800)
 program_flash(0x08010000, [0xAA, 0x55, 0x12, 0x34], verify=True)
-verify_flash(0x08010000, [0xAA, 0x55, 0x12, 0x34])
 ```
 
-### 8. Start a GDB server
+## All tools (70+)
 
-```python
-start_gdb_server()
-get_gdb_server_status()
-stop_gdb_server()
+<details>
+<summary>Configuration</summary>
+
+`get_runtime_config` · `list_demo_profiles` · `load_demo_profile` · `configure_probe` · `configure_log` · `configure_elf` · `configure_build` · `connect_with_config`
+</details>
+
+<details>
+<summary>Probe control and stepping</summary>
+
+`list_connected_probes` · `probe_connect` · `probe_disconnect` · `probe_halt` · `probe_resume` · `probe_reset` · `probe_step` · `continue_target` · `probe_continue_until` · `step_over` · `step_out` · `source_step` · `run_to_source` · `run_to_function`
+</details>
+
+<details>
+<summary>Breakpoints and watchpoints</summary>
+
+`set_breakpoint` · `set_breakpoints_for_function_range` · `clear_breakpoint` · `clear_all_breakpoints` · `probe_set_watchpoint` · `probe_remove_watchpoint` · `probe_clear_all_watchpoints`
+</details>
+
+<details>
+<summary>Registers, memory, and state</summary>
+
+`probe_read_registers` · `probe_read_fpu_registers` · `probe_read_mpu_regions` · `probe_read_memory` · `probe_write_memory` · `dump_memory` · `memory_find` · `memory_snapshot` · `memory_diff` · `read_memory_map` · `read_stopped_context` · `erase_flash` · `program_flash` · `verify_flash`
+</details>
+
+<details>
+<summary>ELF and DWARF</summary>
+
+`elf_load` · `elf_addr_to_source` · `elf_list_functions` · `elf_symbol_info` · `read_symbol_value` · `write_symbol_value` · `watch_symbol` · `disassemble` · `backtrace` · `dwarf_backtrace` · `get_locals` · `set_local` · `log_trace` · `reset_and_trace` · `compare_elf_to_flash`
+</details>
+
+<details>
+<summary>Logs, RTOS, and RTT</summary>
+
+`log_connect` · `log_disconnect` · `log_tail` · `list_rtos_tasks` · `rtos_task_context` · `read_rtt_log` · `read_stack_usage`
+</details>
+
+<details>
+<summary>SVD and peripheral diagnosis</summary>
+
+`svd_load` · `svd_list_peripherals` · `svd_get_registers` · `svd_read_peripheral` · `svd_write_register` · `svd_write_field` · `diagnose_peripheral_stuck`
+</details>
+
+<details>
+<summary>Higher-level diagnosis</summary>
+
+`diagnose` · `diagnose_hardfault` · `diagnose_startup_failure` · `diagnose_memory_corruption` · `diagnose_stack_overflow` · `diagnose_interrupt_issue` · `diagnose_clock_issue` · `run_debug_loop`
+</details>
+
+<details>
+<summary>Build, flash, GDB, lifecycle</summary>
+
+`build_project` · `flash_firmware` · `start_gdb_server` · `stop_gdb_server` · `get_gdb_server_status` · `disconnect_all`
+</details>
+
+## Tested on real hardware
+
+| Board | MCU | Probe | Capabilities verified |
+|-------|-----|-------|----------------------|
+| ATK_PICTURE | STM32L496VETx | ST-Link (pyOCD) | Full: ELF, DWARF, SVD, flash, RTT, RTOS, diagnosis, GDB server |
+| Custom | STM32F103C8 | J-Link | Full: connect, registers, memory, watchpoints, flash erase/program/verify |
+
+89 automated tests passing.
+
+## Architecture
+
+```
+AI assistant / IDE / Agent
+        │
+        ▼
+   ┌─────────┐
+   │ mcudbg  │  MCP server
+   │  core   │  session, tools, result shaping
+   └────┬────┘
+        │
+   ┌────┴─────────────────────────┐
+   │         probe backends       │
+   ├──────────┬───────────────────┤
+   │  pyOCD   │    J-Link         │
+   │ (ST-Link,│  (pylink-square)  │
+   │ CMSIS-DAP│                   │
+   └──────────┴───────────────────┘
+        │
+   ┌────┴────┐  ┌────────┐  ┌──────┐
+   │  UART   │  │  RTT   │  │ SVD  │
+   │   log   │  │  log   │  │parse │
+   └─────────┘  └────────┘  └──────┘
 ```
 
-## Tool groups
-
-### Configuration
-
-- `get_runtime_config`
-- `list_demo_profiles`
-- `load_demo_profile`
-- `configure_probe`
-- `configure_log`
-- `configure_elf`
-- `configure_build`
-- `connect_with_config`
-
-### GDB server
-
-- `start_gdb_server`
-- `stop_gdb_server`
-- `get_gdb_server_status`
-
-### Probe control and stepping
-
-- `list_connected_probes`
-- `probe_connect`
-- `probe_disconnect`
-- `probe_halt`
-- `probe_resume`
-- `probe_reset`
-- `probe_step`
-- `continue_target`
-- `probe_continue_until`
-- `step_over`
-- `step_out`
-- `source_step`
-- `run_to_source`
-- `run_to_function`
-
-### Breakpoints and watchpoints
-
-- `set_breakpoint`
-- `set_breakpoints_for_function_range`
-- `clear_breakpoint`
-- `clear_all_breakpoints`
-- `probe_set_watchpoint`
-- `probe_remove_watchpoint`
-- `probe_clear_all_watchpoints`
-
-### Registers, memory, and state
-
-- `probe_read_registers`
-- `probe_read_fpu_registers`
-- `probe_read_mpu_regions`
-- `probe_read_memory`
-- `probe_write_memory`
-- `dump_memory`
-- `memory_find`
-- `memory_snapshot`
-- `memory_diff`
-- `read_memory_map`
-- `read_stopped_context`
-- `erase_flash`
-- `program_flash`
-- `verify_flash`
-
-### ELF and DWARF
-
-- `elf_load`
-- `elf_addr_to_source`
-- `elf_list_functions`
-- `elf_symbol_info`
-- `read_symbol_value`
-- `write_symbol_value`
-- `watch_symbol`
-- `disassemble`
-- `backtrace`
-- `dwarf_backtrace`
-- `get_locals`
-- `set_local`
-- `log_trace`
-- `reset_and_trace`
-- `compare_elf_to_flash`
-
-### Logs, RTOS, and RTT
-
-- `log_connect`
-- `log_disconnect`
-- `log_tail`
-- `list_rtos_tasks`
-- `rtos_task_context`
-- `read_rtt_log`
-- `read_stack_usage`
-
-### SVD and peripheral diagnosis
-
-- `svd_load`
-- `svd_list_peripherals`
-- `svd_get_registers`
-- `svd_read_peripheral`
-- `svd_write_register`
-- `svd_write_field`
-- `diagnose_peripheral_stuck`
-
-### Higher-level diagnosis
-
-- `diagnose`
-- `diagnose_hardfault`
-- `diagnose_startup_failure`
-- `diagnose_memory_corruption`
-- `diagnose_stack_overflow`
-- `diagnose_interrupt_issue`
-- `diagnose_clock_issue`
-- `run_debug_loop`
-
-### Build, flash, lifecycle
-
-- `build_project`
-- `flash_firmware`
-- `disconnect_all`
+Future modules: `mcudbg-io` (GPIO), `mcudbg-bench` (DMM, PSU, scope, logic analyzer).
 
 ## Known limitations
 
-- probe backend is currently `pyOCD` only
-- build and flash integration currently targets Keil UV4 on Windows
-- RTT and RTOS tooling need matching firmware support to validate end to end
-- some advanced DWARF features depend on debug info quality and compiler settings
-- SVD files are not bundled; you provide the file for your target
-
-## Development status
-
-- local automated test snapshot: `73 passed`
-- current work is beyond the original Phase 2 scope and well into Phase 3 debugging features
-- recent additions include `diagnose(symptom)`, hardware-validated flash erase/program/verify, and a hardware-validated `GDB server` lifecycle entry point
-- the next big product step is a second probe backend such as J-Link
+- Build/flash integration currently targets Keil UV4 on Windows
+- RTOS inspection requires FreeRTOS with matching config
+- Advanced DWARF features depend on compiler debug info quality
+- SVD files are not bundled — provide the file for your target chip
 
 ## Contributing
 
-Issues and PRs are welcome. Hardware validation reports are especially useful if you test on targets beyond STM32L4.
+Issues and PRs are welcome. Hardware validation reports on targets beyond STM32 are especially useful.
 
 ## License
 
