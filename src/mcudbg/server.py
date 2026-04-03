@@ -36,6 +36,10 @@ from .tools.probe import clear_breakpoint as _clear_breakpoint
 from .tools.probe import disconnect_probe as _disconnect_probe
 from .tools.probe import halt_target as _halt_target
 from .tools.probe import list_connected_probes as _list_connected_probes
+from .tools.probe import diagnose_memory_corruption as _diagnose_memory_corruption
+from .tools.probe import dump_memory as _dump_memory
+from .tools.probe import memory_snapshot as _memory_snapshot
+from .tools.probe import memory_diff as _memory_diff
 from .tools.probe import read_memory as _read_memory
 from .tools.probe import read_fpu_registers as _read_fpu_registers
 from .tools.probe import read_mpu_regions as _read_mpu_regions
@@ -366,6 +370,67 @@ async def probe_read_memory(address: int, size: int) -> dict:
     Example: probe_read_memory(0x20000000, 4)
     """
     return _read_memory(session, address=address, size=size)
+
+
+@mcp.tool()
+async def dump_memory(
+    address: int,
+    size: int = 64,
+    format: str = "hex",
+    columns: int = 16,
+) -> dict:
+    """Read and display memory in formatted form.
+
+    format options:
+      'hex'  — classic hex dump with address, hex bytes, and ASCII sidebar
+      'u8'   — array of unsigned bytes
+      'u16'  — array of unsigned 16-bit values (little-endian)
+      'u32'  — array of unsigned 32-bit values (little-endian)
+      'u64'  — array of unsigned 64-bit values (little-endian)
+
+    columns: bytes per row for hex format (default 16).
+    Requires probe connected and target halted.
+    Example: dump_memory(0x20000000, 64)
+    Example: dump_memory(0x20000100, 32, 'u32')
+    """
+    return _dump_memory(session, address=address, size=size, format=format, columns=columns)
+
+
+@mcp.tool()
+async def diagnose_memory_corruption(stack_canary: int = 0xCCCCCCCC) -> dict:
+    """Scan stack and heap regions for corruption evidence.
+
+    Reads stack bounds from ELF linker symbols (_estack / _Min_Stack_Size or __StackTop / __StackLimit),
+    checks whether current SP is in bounds, scans for stack canary high-water mark,
+    and samples heap boundaries for known corruption magic values.
+
+    stack_canary: 4-byte fill pattern written to unused stack at startup (default 0xCCCCCCCC).
+    Common values: 0xCCCCCCCC (Keil/IAR default), 0xDEADBEEF, 0xA5A5A5A5.
+    Requires ELF loaded and probe connected.
+    """
+    return _diagnose_memory_corruption(session, stack_canary=stack_canary)
+
+
+@mcp.tool()
+async def memory_snapshot(address: int, size: int, label: str = "default") -> dict:
+    """Capture a memory region snapshot for later comparison.
+
+    Use before an operation (step, continue, write) then call memory_diff to see what changed.
+    Multiple snapshots can be stored simultaneously using different labels.
+    Example: memory_snapshot(0x20000000, 256, 'before_init')
+    """
+    return _memory_snapshot(session, address=address, size=size, label=label)
+
+
+@mcp.tool()
+async def memory_diff(label: str = "default") -> dict:
+    """Re-read a snapshotted memory region and return a byte-level diff.
+
+    Returns changed_bytes (individual byte changes) and changed_regions (grouped contiguous runs).
+    Call memory_snapshot first to establish a baseline.
+    Example: memory_diff('before_init')
+    """
+    return _memory_diff(session, label=label)
 
 
 @mcp.tool()

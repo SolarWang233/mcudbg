@@ -185,6 +185,306 @@ def read_memory(session: SessionState, address: int, size: int) -> dict:
     }
 
 
+def dump_memory(
+    session: SessionState,
+    address: int,
+    size: int = 64,
+    format: str = "hex",
+    columns: int = 16,
+) -> dict:
+    """Read and format memory. format: 'hex', 'u8', 'u16', 'u32', 'u64'."""
+    try:
+        data = session.probe.read_memory(address, size)
+    except Exception as e:
+        return {"status": "error", "summary": str(e)}
+
+    result: dict = {
+        "status": "ok",
+        "summary": f"Dumped {len(data)} byte(s) from {hex(address)} as {format}.",
+        "address": hex(address),
+        "size": len(data),
+        "format": format,
+    }
+
+    if format == "hex":
+        lines = []
+        cols = max(1, columns)
+        for row_start in range(0, len(data), cols):
+            chunk = data[row_start:row_start + cols]
+            addr_str = f"{address + row_start:#010x}"
+            hex_part = " ".join(f"{b:02x}" for b in chunk)
+            ascii_part = "".join(chr(b) if 0x20 <= b < 0x7F else "." for b in chunk)
+            padding = "   " * (cols - len(chunk))
+            lines.append(f"{addr_str}  {hex_part}{padding}  |{ascii_part}|")
+        result["hex_dump"] = lines
+    elif format in ("u8", "u16", "u32", "u64"):
+        width = {"u8": 1, "u16": 2, "u32": 4, "u64": 8}[format]
+        values = []
+        for i in range(0, len(data) - (len(data) % width) if width > 1 else len(data), width):
+            val = int.from_bytes(data[i:i + width], "little")
+            values.append(val)
+        result["values"] = values
+        result["values_hex"] = [hex(v) for v in values]
+    else:
+        return {"status": "error", "summary": f"Unknown format '{format}'. Use: hex, u8, u16, u32, u64"}
+
+    return result
+
+
+def memory_snapshot(session: SessionState, address: int, size: int, label: str = "default") -> dict:
+    """Capture a memory snapshot and store it under label for later diff."""
+    try:
+        data = session.probe.read_memory(address, size)
+    except Exception as e:
+        return {"status": "error", "summary": str(e)}
+    session.memory_snapshots[label] = {"address": address, "size": size, "data": data}
+    return {
+        "status": "ok",
+        "summary": f"Snapshot '{label}' taken: {size} byte(s) at {hex(address)}.",
+        "label": label,
+        "address": hex(address),
+        "size": size,
+    }
+
+
+def memory_diff(session: SessionState, label: str = "default") -> dict:
+    """Re-read the region from a previous snapshot and return changed bytes."""
+    snap = session.memory_snapshots.get(label)
+    if snap is None:
+        labels = list(session.memory_snapshots.keys())
+        return {
+            "status": "error",
+            "summary": f"No snapshot with label '{label}'.",
+            "available_labels": labels,
+        }
+    address: int = snap["address"]
+    size: int = snap["size"]
+    old_data: bytes = snap["data"]
+
+    try:
+        new_data = session.probe.read_memory(address, size)
+    except Exception as e:
+        return {"status": "error", "summary": str(e)}
+
+    # Find changed bytes and group into contiguous regions
+    changed_bytes: list[dict] = []
+    for i, (o, n) in enumerate(zip(old_data, new_data)):
+        if o != n:
+            changed_bytes.append({
+                "address": hex(address + i),
+                "offset": i,
+                "old": hex(o),
+                "new": hex(n),
+            })
+
+    # Group consecutive changed bytes into regions
+    regions: list[dict] = []
+    if changed_bytes:
+        start = changed_bytes[0]["offset"]
+        end = start
+        for cb in changed_bytes[1:]:
+            if cb["offset"] == end + 1:
+                end = cb["offset"]
+            else:
+                regions.append({
+                    "address": hex(address + start),
+                    "offset": start,
+                    "length": end - start + 1,
+                    "old_hex": old_data[start:end + 1].hex(),
+                    "new_hex": new_data[start:end + 1].hex(),
+                })
+                start = end = cb["offset"]
+        regions.append({
+            "address": hex(address + start),
+            "offset": start,
+            "length": end - start + 1,
+            "old_hex": old_data[start:end + 1].hex(),
+            "new_hex": new_data[start:end + 1].hex(),
+        })
+
+    n_changed = len(changed_bytes)
+    n_regions = len(regions)
+    summary = (
+        f"{n_changed} byte(s) changed in {n_regions} region(s)."
+        if n_changed
+        else "No changes detected."
+    )
+    return {
+        "status": "ok",
+        "summary": summary,
+        "label": label,
+        "address": hex(address),
+        "size": size,
+        "total_changed_bytes": n_changed,
+        "changed_regions": regions,
+        "changed_bytes": changed_bytes,
+    }
+
+
+def diagnose_memory_corruption(
+    session: SessionState,
+    stack_canary: int = 0xCCCCCCCC,
+) -> dict:
+    """Scan stack and heap regions for corruption evidence.
+
+    Checks: SP vs stack bounds, stack canary high-water mark, heap boundary patterns.
+    stack_canary: 4-byte fill pattern used to initialize unused stack (default 0xCCCCCCCC).
+    """
+    if not session.elf.is_loaded:
+        return {"status": "error", "summary": "ELF not loaded."}
+
+    evidence: list[str] = []
+
+    def _resolve_addr(name: str) -> int | None:
+        r = session.elf.resolve_symbol(name)
+        return int(r["address"], 16) if r["address"] is not None else None
+
+    # --- Stack bounds ---
+    stack_top = None
+    stack_top_sym = None
+    for sym in ("_estack", "__StackTop", "__stack_end__", "__stack"):
+        val = _resolve_addr(sym)
+        if val is not None:
+            stack_top = val
+            stack_top_sym = sym
+            break
+
+    stack_bottom = None
+    for sym in ("__StackLimit", "__stack_start__"):
+        val = _resolve_addr(sym)
+        if val is not None:
+            stack_bottom = val
+            break
+
+    if stack_top is not None and stack_bottom is None:
+        for sym in ("_Min_Stack_Size", "__stack_size__"):
+            val = _resolve_addr(sym)
+            if val is not None:
+                stack_bottom = stack_top - val
+                break
+
+    # --- Current SP ---
+    try:
+        core = session.probe.read_core_registers()
+        current_sp = core["sp"]
+    except Exception as e:
+        return {"status": "error", "summary": f"Failed to read registers: {e}"}
+
+    stack_info: dict = {"current_sp": hex(current_sp)}
+    if stack_top is not None:
+        stack_info["top_address"] = hex(stack_top)
+        stack_info["top_symbol"] = stack_top_sym
+
+    if stack_top is not None and stack_bottom is not None:
+        stack_size = stack_top - stack_bottom
+        stack_info["bottom_address"] = hex(stack_bottom)
+        stack_info["size_bytes"] = stack_size
+        sp_in_bounds = stack_bottom <= current_sp <= stack_top
+        stack_info["sp_in_bounds"] = sp_in_bounds
+        stack_info["sp_headroom_bytes"] = current_sp - stack_bottom
+        if not sp_in_bounds:
+            evidence.append(
+                f"SP {hex(current_sp)} outside stack bounds [{hex(stack_bottom)}, {hex(stack_top)}]"
+            )
+
+        # Canary scan: read from bottom up, find first non-canary word
+        scan_size = min(stack_size, 8192)
+        try:
+            raw = session.probe.read_memory(stack_bottom, scan_size)
+            canary_bytes = stack_canary.to_bytes(4, "little")
+            high_water: int | None = None
+            for i in range(0, len(raw) - 3, 4):
+                if raw[i : i + 4] != canary_bytes:
+                    high_water = stack_bottom + i
+                    break
+            cscan: dict = {"canary_value": hex(stack_canary)}
+            if high_water is not None:
+                used = stack_top - high_water
+                cscan["high_water_mark"] = hex(high_water)
+                cscan["used_bytes_estimate"] = used
+                evidence.append(
+                    f"Stack high-water mark {hex(high_water)}: ~{used}/{stack_size} bytes used"
+                )
+            else:
+                cscan["high_water_mark"] = None
+                evidence.append(
+                    f"Canary intact across {scan_size} bytes from {hex(stack_bottom)}"
+                )
+            stack_info["canary_scan"] = cscan
+        except Exception as e:
+            stack_info["canary_scan"] = {"error": str(e)}
+
+    # --- Heap bounds ---
+    heap_start: int | None = None
+    heap_start_sym: str | None = None
+    for sym in ("_end", "__heap_start", "__heap_start__"):
+        val = _resolve_addr(sym)
+        if val is not None:
+            heap_start = val
+            heap_start_sym = sym
+            break
+
+    heap_end: int | None = None
+    for sym in ("__heap_end", "__heap_end__"):
+        val = _resolve_addr(sym)
+        if val is not None:
+            heap_end = val
+            break
+    if heap_start is not None and heap_end is None:
+        for sym in ("_Min_Heap_Size", "__heap_size__"):
+            val = _resolve_addr(sym)
+            if val is not None:
+                heap_end = heap_start + val
+                break
+
+    heap_info: dict = {}
+    CORRUPTION_MAGIC = {0xDEADBEEF, 0xDEADDEAD, 0xBAADF00D, 0xFEEEFEEE, 0xFDFDFDFD}
+    if heap_start is not None:
+        heap_info["start_address"] = hex(heap_start)
+        heap_info["start_symbol"] = heap_start_sym
+        if heap_end is not None:
+            heap_info["end_address"] = hex(heap_end)
+            heap_info["size_bytes"] = heap_end - heap_start
+
+        # Sample first and last 16 bytes of heap for corruption patterns
+        for label, addr in (("start", heap_start), ("end", heap_end - 16 if heap_end else None)):
+            if addr is None:
+                continue
+            try:
+                chunk = session.probe.read_memory(addr, 16)
+                heap_info[f"{label}_16_bytes_hex"] = chunk.hex()
+                if len(chunk) >= 4:
+                    u32 = int.from_bytes(chunk[:4], "little")
+                    if u32 in CORRUPTION_MAGIC:
+                        evidence.append(
+                            f"Heap {label} {hex(addr)} contains corruption magic {hex(u32)}"
+                        )
+            except Exception as e:
+                heap_info[f"{label}_read_error"] = str(e)
+    else:
+        heap_info["symbols_found"] = []
+        evidence.append("No heap symbols found in ELF (no _end / __heap_start)")
+
+    parts = []
+    if stack_top is not None and stack_bottom is not None:
+        parts.append(f"stack [{hex(stack_bottom)}-{hex(stack_top)}]")
+    if heap_start is not None:
+        parts.append(f"heap from {hex(heap_start)}")
+    summary = (
+        f"Memory scan: {', '.join(parts)}."
+        if parts
+        else "Memory scan complete. No stack/heap symbols found in ELF."
+    )
+
+    return {
+        "status": "ok",
+        "summary": summary,
+        "stack": stack_info,
+        "heap": heap_info,
+        "evidence": evidence,
+    }
+
+
 def read_symbol_value(session: SessionState, name: str, size: int = 4) -> dict:
     if not session.elf.is_loaded:
         return {

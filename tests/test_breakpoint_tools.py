@@ -61,6 +61,8 @@ class _FakeElf:
     def resolve_symbol(self, name: str) -> dict:
         if name == "sensor_init":
             return {"symbol": name, "address": "0x8001234", "source": None}
+        if name == "main":
+            return {"symbol": name, "address": "0x8008805", "source": None}
         return {"symbol": name, "address": None, "source": None}
 
     def resolve_address(self, address: int) -> dict:
@@ -140,3 +142,15 @@ def test_clear_breakpoint_and_clear_all_breakpoints() -> None:
     assert result["status"] == "ok"
     assert result["cleared_count"] == 1
     assert not session.probe.breakpoints
+
+
+def test_set_breakpoint_normalizes_thumb_symbol_address() -> None:
+    session = SessionState()
+    session.probe = _FakeBreakpointProbe()
+    session.elf = _FakeElf()
+
+    result = set_breakpoint(session, symbol="main")
+
+    assert result["status"] == "ok"
+    assert result["breakpoint"]["address"] == "0x8008804"
+    assert 0x08008804 in session.probe.breakpoints

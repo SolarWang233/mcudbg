@@ -18,3 +18,4 @@ class SessionState:
     svd: SvdManager = field(default_factory=SvdManager)
     build: KeilBuildRuntime = field(default_factory=KeilBuildRuntime)
     config: RuntimeConfig = field(default_factory=RuntimeConfig)
+    memory_snapshots: dict = field(default_factory=dict)
