@@ -128,6 +128,14 @@ class ElfManager:
     def is_loaded(self) -> bool:
         return self._path is not None
 
+    def list_functions(self, name_filter: str | None = None) -> list[dict[str, Any]]:
+        """Return function symbols, optionally filtered by substring match on name."""
+        funcs = self._func_symbols
+        if name_filter:
+            low = name_filter.lower()
+            funcs = [f for f in funcs if low in f["name"].lower()]
+        return [{"name": f["name"], "address": hex(f["address"]), "size": f["size"]} for f in funcs]
+
     def get_section_data(self) -> list[dict[str, Any]]:
         """Return loadable PROGBITS sections with their binary content."""
         if not self.is_loaded:

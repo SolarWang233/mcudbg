@@ -564,6 +564,143 @@ def log_trace(
     }
 
 
+def reset_and_trace(
+    session: SessionState,
+    max_steps: int = 200,
+    max_lines: int = 50,
+) -> dict:
+    """Reset target, halt, then immediately trace execution from reset vector."""
+    try:
+        session.probe.reset(halt=True)
+    except Exception as e:
+        return {"status": "error", "summary": f"Reset failed: {e}"}
+    result = log_trace(session, max_steps=max_steps, max_lines=max_lines)
+    result["summary"] = "Reset+trace: " + result.get("summary", "")
+    return result
+
+
+def read_stack_usage(
+    session: SessionState,
+    canary: int = 0xa5a5a5a5,
+    task_name_len: int = 16,
+) -> dict:
+    """Scan each FreeRTOS task's stack for the canary high-water mark.
+
+    FreeRTOS initialises unused stack with tskSTACK_FILL_BYTE (0xa5).
+    Scans from pxStack (base) upward to find the first non-canary word.
+    min_free_bytes = bytes of untouched canary from base.
+    """
+    if not session.elf.is_loaded:
+        return {"status": "error", "summary": "ELF not loaded."}
+
+    def _sym(name: str) -> int | None:
+        r = session.elf.resolve_symbol(name)
+        return int(r["address"], 16) if r["address"] is not None else None
+
+    def read32(addr: int) -> int:
+        return int.from_bytes(session.probe.read_memory(addr, 4), "little")
+
+    LIST_ITEM_NEXT, LIST_ITEM_OWNER = 4, 12
+
+    def walk_list(list_addr: int) -> list[int]:
+        owners: list[int] = []
+        try:
+            n = read32(list_addr)
+            if n == 0 or n > 512:
+                return owners
+            end = list_addr + 8
+            cur = read32(end + LIST_ITEM_NEXT)
+            for _ in range(min(n, 512)):
+                if cur == 0 or cur == end:
+                    break
+                o = read32(cur + LIST_ITEM_OWNER)
+                if o:
+                    owners.append(o)
+                cur = read32(cur + LIST_ITEM_NEXT)
+        except Exception:
+            pass
+        return owners
+
+    all_tcbs: set[int] = set()
+    ready_ptr = _sym("pxReadyTasksLists")
+    if ready_ptr:
+        for pri in range(32):
+            for a in walk_list(ready_ptr + pri * 20):
+                all_tcbs.add(a)
+    for sym in ("xDelayedTaskList1", "xDelayedTaskList2", "xSuspendedTaskList"):
+        ptr = _sym(sym)
+        if ptr:
+            for a in walk_list(ptr):
+                all_tcbs.add(a)
+    cur_ptr = _sym("pxCurrentTCB")
+    if cur_ptr:
+        try:
+            all_tcbs.add(read32(cur_ptr))
+        except Exception:
+            pass
+
+    if not all_tcbs:
+        return {"status": "error", "summary": "No FreeRTOS tasks found. Is pxCurrentTCB in ELF?"}
+
+    canary_bytes = canary.to_bytes(4, "little")
+    tasks: list[dict] = []
+    for tcb in all_tcbs:
+        try:
+            top_of_stack = read32(tcb)
+            stack_base   = read32(tcb + 0x30)
+            name_raw     = session.probe.read_memory(tcb + 0x34, task_name_len)
+            name = name_raw.split(b"\x00")[0].decode("utf-8", errors="replace")
+        except Exception as e:
+            tasks.append({"tcb_address": hex(tcb), "error": str(e)})
+            continue
+
+        stack_size = top_of_stack - stack_base if top_of_stack > stack_base else None
+        min_free: int | None = None
+        if stack_base and stack_size and 0 < stack_size <= 65536:
+            try:
+                raw = session.probe.read_memory(stack_base, stack_size)
+                free_words = 0
+                for i in range(0, len(raw) - 3, 4):
+                    if raw[i:i+4] == canary_bytes:
+                        free_words += 1
+                    else:
+                        break
+                min_free = free_words * 4
+            except Exception:
+                pass
+
+        tasks.append({
+            "name": name,
+            "tcb_address": hex(tcb),
+            "stack_base": hex(stack_base),
+            "top_of_stack": hex(top_of_stack),
+            "stack_size_bytes": stack_size,
+            "min_free_bytes": min_free,
+            "min_used_bytes": (stack_size - min_free) if (stack_size and min_free is not None) else None,
+        })
+
+    tasks.sort(key=lambda t: t.get("name", ""))
+    return {
+        "status": "ok",
+        "summary": f"Stack usage for {len(tasks)} task(s). Canary: {hex(canary)}.",
+        "canary_value": hex(canary),
+        "tasks": tasks,
+    }
+
+
+def elf_list_functions(session: SessionState, name_filter: str | None = None) -> dict:
+    """List all function symbols from the loaded ELF."""
+    if not session.elf.is_loaded:
+        return {"status": "error", "summary": "ELF not loaded."}
+    funcs = session.elf.list_functions(name_filter=name_filter)
+    return {
+        "status": "ok",
+        "summary": f"{len(funcs)} function(s) found" + (f" matching '{name_filter}'." if name_filter else "."),
+        "count": len(funcs),
+        "functions": funcs,
+    }
+
+
 def memory_snapshot(session: SessionState, address: int, size: int, label: str = "default") -> dict:
     """Capture a memory snapshot and store it under label for later diff."""
     try:

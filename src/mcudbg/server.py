@@ -44,6 +44,9 @@ from .tools.probe import read_memory_map as _read_memory_map
 from .tools.probe import watch_symbol as _watch_symbol
 from .tools.probe import compare_elf_to_flash as _compare_elf_to_flash
 from .tools.probe import log_trace as _log_trace
+from .tools.probe import reset_and_trace as _reset_and_trace
+from .tools.probe import read_stack_usage as _read_stack_usage
+from .tools.probe import elf_list_functions as _elf_list_functions
 from .tools.probe import list_rtos_tasks as _list_rtos_tasks
 from .tools.probe import rtos_task_context as _rtos_task_context
 from .tools.probe import read_rtt_log as _read_rtt_log
@@ -485,6 +488,42 @@ async def log_trace(max_steps: int = 200, max_lines: int = 50) -> dict:
     Requires ELF with debug info (.debug_line) and probe connected.
     """
     return _log_trace(session, max_steps=max_steps, max_lines=max_lines)
+
+
+@mcp.tool()
+async def reset_and_trace(max_steps: int = 200, max_lines: int = 50) -> dict:
+    """Reset the target and immediately trace execution from the reset vector.
+
+    Calls reset(halt=True) then steps through code collecting unique source lines.
+    Useful for seeing the startup path (clocks, peripherals, RTOS init).
+    Requires ELF with debug info and probe connected.
+    """
+    return _reset_and_trace(session, max_steps=max_steps, max_lines=max_lines)
+
+
+@mcp.tool()
+async def read_stack_usage(canary: int = 0xa5a5a5a5, task_name_len: int = 16) -> dict:
+    """Scan FreeRTOS task stacks for the canary high-water mark.
+
+    FreeRTOS fills unused stack with 0xa5 (tskSTACK_FILL_BYTE).
+    Scans each task's stack from base upward and counts intact canary words.
+    Reports min_free_bytes (never-used stack) and min_used_bytes per task.
+    canary: fill byte pattern used at init (default 0xa5a5a5a5).
+    Requires ELF loaded and probe connected with target halted.
+    """
+    return _read_stack_usage(session, canary=canary, task_name_len=task_name_len)
+
+
+@mcp.tool()
+async def elf_list_functions(name_filter: str | None = None) -> dict:
+    """List all function symbols from the loaded ELF with address and size.
+
+    name_filter: optional substring to filter function names (case-insensitive).
+    Useful for finding candidate breakpoint locations without a map file.
+    Example: elf_list_functions('uart')  → all UART-related functions
+    Requires ELF loaded (no probe needed).
+    """
+    return _elf_list_functions(session, name_filter=name_filter)
 
 
 @mcp.tool()
