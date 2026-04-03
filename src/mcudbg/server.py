@@ -51,6 +51,7 @@ from .tools.probe import continue_until as _continue_until
 from .tools.probe import addr_to_source as _addr_to_source
 from .tools.probe import set_breakpoint as _set_breakpoint
 from .tools.probe import source_step as _source_step
+from .tools.probe import backtrace as _backtrace
 from .tools.probe import disassemble as _disassemble
 from .tools.probe import step_out as _step_out
 from .tools.probe import step_over as _step_over
@@ -258,6 +259,19 @@ async def disassemble(address: int, count: int = 10) -> dict:
     Example: disassemble(0x08001234, 10)
     """
     return _disassemble(session, address=address, count=count)
+
+
+@mcp.tool()
+async def backtrace(max_frames: int = 20, stack_scan_words: int = 64) -> dict:
+    """Heuristic call stack reconstruction for Cortex-M targets.
+
+    Frame 0 is the current PC. Frame 1 is LR (return address).
+    Further frames are found by scanning the stack for addresses that
+    resolve to known function symbols in the loaded ELF.
+    Accuracy depends on compiler optimizations; best with -O0 or -O1.
+    Requires probe connected and target halted.
+    """
+    return _backtrace(session, max_frames=max_frames, stack_scan_words=stack_scan_words)
 
 
 @mcp.tool()

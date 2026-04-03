@@ -548,6 +548,74 @@ def source_step(session: SessionState, max_instructions: int = 100) -> dict:
     }
 
 
+def backtrace(
+    session: SessionState,
+    max_frames: int = 20,
+    stack_scan_words: int = 64,
+) -> dict:
+    core = session.probe.read_core_registers()
+    pc = core["pc"] & ~1
+    lr = core["lr"]
+    sp = core["sp"]
+
+    def make_frame(addr: int, idx: int) -> dict:
+        frame: dict = {"frame": idx, "address": hex(addr)}
+        if session.elf.is_loaded:
+            resolved = session.elf.resolve_address(addr)
+            frame["symbol"] = resolved["symbol"]
+            frame["source"] = resolved["source"]
+        else:
+            frame["symbol"] = None
+            frame["source"] = None
+        return frame
+
+    def is_exc_return(val: int) -> bool:
+        return (val & 0xFF000000) == 0xFF000000
+
+    frames: list[dict] = []
+    seen: set[int] = set()
+
+    # Frame 0 — current PC
+    frames.append(make_frame(pc, 0))
+    seen.add(pc)
+
+    # Frame 1 — LR (return address from current function)
+    if not is_exc_return(lr) and lr > 0x100:
+        lr_addr = lr & ~1
+        if lr_addr not in seen:
+            f = make_frame(lr_addr, 1)
+            if not session.elf.is_loaded or f["symbol"] is not None:
+                frames.append(f)
+                seen.add(lr_addr)
+
+    # Frame 2+ — scan stack for saved return addresses
+    for i in range(0, stack_scan_words * 4, 4):
+        if len(frames) >= max_frames:
+            break
+        try:
+            word = int.from_bytes(session.probe.read_memory(sp + i, 4), "little")
+        except Exception:
+            break
+        if is_exc_return(word) or word < 0x100:
+            continue
+        addr = word & ~1
+        if addr in seen:
+            continue
+        if session.elf.is_loaded:
+            resolved = session.elf.resolve_address(addr)
+            if resolved["symbol"] is None:
+                continue
+        seen.add(addr)
+        frames.append(make_frame(addr, len(frames)))
+
+    return {
+        "status": "ok",
+        "summary": f"Found {len(frames)} frame(s).",
+        "frame_count": len(frames),
+        "frames": frames,
+    }
+
+
 def step_out(session: SessionState, timeout_seconds: float = 5.0) -> dict:
     core = session.probe.read_core_registers()
     lr = core["lr"] & ~1
