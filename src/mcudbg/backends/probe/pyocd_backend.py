@@ -299,3 +299,160 @@ class PyOcdProbeBackend(ProbeBackend):
         except Exception:
             result["fpscr"] = None
         return result
+
+    def erase_flash(
+        self,
+        start_address: int | None = None,
+        end_address: int | None = None,
+        chip_erase: bool = False,
+    ) -> dict[str, Any]:
+        self._require_target()
+        flash = self._get_flash()
+
+        try:
+            if chip_erase:
+                flash.init(flash.Operation.ERASE, reset=True)
+                try:
+                    flash.erase_all()
+                finally:
+                    try:
+                        flash.cleanup()
+                    except Exception:
+                        pass
+                return {
+                    "status": "ok",
+                    "summary": "Chip erase completed.",
+                    "chip_erase": True,
+                    "start_address": None,
+                    "end_address": None,
+                }
+
+            if start_address is None or end_address is None:
+                raise ValueError("start_address and end_address are required when chip_erase is False.")
+            if end_address <= start_address:
+                raise ValueError("end_address must be greater than start_address.")
+
+            flash.init(flash.Operation.ERASE, address=start_address, reset=True)
+            try:
+                addr = start_address
+                while addr < end_address:
+                    flash.erase_sector(addr)
+                    sector_info = flash.get_sector_info(addr)
+                    sector_size = int(getattr(sector_info, "size", 0))
+                    if sector_size <= 0:
+                        raise BackendUnavailableError(f"invalid flash sector size at {hex(addr)}")
+                    addr += sector_size
+            finally:
+                try:
+                    flash.cleanup()
+                except Exception:
+                    pass
+
+            return {
+                "status": "ok",
+                "summary": f"Erased flash range {hex(start_address)}-{hex(end_address)}.",
+                "chip_erase": False,
+                "start_address": hex(start_address),
+                "end_address": hex(end_address),
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "summary": str(e),
+            }
+
+    def program_flash(
+        self,
+        address: int,
+        data: bytes,
+        verify: bool = True,
+    ) -> dict[str, Any]:
+        self._require_target()
+        flash = self._get_flash()
+
+        try:
+            if not data:
+                raise ValueError("data must not be empty.")
+
+            flash.init(flash.Operation.PROGRAM, address=address, reset=True)
+            try:
+                offset = 0
+                while offset < len(data):
+                    page_info = flash.get_page_info(address + offset)
+                    page_size = int(getattr(page_info, "size", 0))
+                    if page_size <= 0:
+                        raise BackendUnavailableError(f"invalid flash page size at {hex(address + offset)}")
+                    chunk = data[offset:offset + page_size]
+                    flash.program_page(address + offset, chunk)
+                    offset += len(chunk)
+            finally:
+                try:
+                    flash.cleanup()
+                except Exception:
+                    pass
+
+            result = {
+                "status": "ok",
+                "summary": f"Programmed {len(data)} byte(s) to flash at {hex(address)}.",
+                "address": hex(address),
+                "size": len(data),
+                "verify": verify,
+            }
+            if verify:
+                verify_result = self.verify_flash(address, data)
+                if verify_result["status"] != "ok" or not verify_result.get("match", False):
+                    return verify_result
+            return result
+        except Exception as e:
+            return {
+                "status": "error",
+                "summary": str(e),
+            }
+
+    def verify_flash(self, address: int, data: bytes) -> dict[str, Any]:
+        self._require_target()
+        try:
+            if not data:
+                raise ValueError("data must not be empty.")
+
+            actual = self.read_memory(address, len(data))
+            mismatch_count = 0
+            first_mismatch_address = None
+            for index, (expected_byte, actual_byte) in enumerate(zip(data, actual)):
+                if expected_byte != actual_byte:
+                    mismatch_count += 1
+                    if first_mismatch_address is None:
+                        first_mismatch_address = address + index
+
+            match = mismatch_count == 0
+            return {
+                "status": "ok" if match else "error",
+                "summary": (
+                    f"Verified {len(data)} byte(s) at {hex(address)}."
+                    if match
+                    else f"Flash verification failed at {hex(first_mismatch_address)}."
+                ),
+                "address": hex(address),
+                "size": len(data),
+                "match": match,
+                "mismatch_count": mismatch_count,
+                "first_mismatch_address": None if first_mismatch_address is None else hex(first_mismatch_address),
+            }
+        except Exception as e:
+            return {
+                "status": "error",
+                "summary": str(e),
+            }
+
+    def _get_flash(self) -> Any:
+        flash = getattr(self._target, "flash", None)
+        if flash is not None:
+            return flash
+
+        memory_map = getattr(self._target, "memory_map", None)
+        if memory_map is not None:
+            for region in memory_map:
+                if getattr(region, "is_flash", False) and getattr(region, "flash", None) is not None:
+                    return region.flash
+
+        raise BackendUnavailableError("flash programming is not available for this target")

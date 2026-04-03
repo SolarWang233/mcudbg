@@ -154,6 +154,56 @@ def step_instruction(session: SessionState) -> dict:
     return result
 
 
+def erase_flash(
+    session: SessionState,
+    start_address: int | None = None,
+    end_address: int | None = None,
+    chip_erase: bool = False,
+) -> dict:
+    try:
+        return session.probe.erase_flash(
+            start_address=start_address,
+            end_address=end_address,
+            chip_erase=chip_erase,
+        )
+    except Exception as e:
+        return {
+            "status": "error",
+            "summary": str(e),
+        }
+
+
+def program_flash(
+    session: SessionState,
+    address: int,
+    data: list[int] | bytes,
+    verify: bool = True,
+) -> dict:
+    try:
+        payload = bytes(data) if not isinstance(data, bytes) else data
+        return session.probe.program_flash(address=address, data=payload, verify=verify)
+    except Exception as e:
+        return {
+            "status": "error",
+            "summary": str(e),
+        }
+
+
+def verify_flash(
+    session: SessionState,
+    address: int,
+    data: list[int] | bytes,
+) -> dict:
+    try:
+        payload = bytes(data) if not isinstance(data, bytes) else data
+        return session.probe.verify_flash(address=address, data=payload)
+    except Exception as e:
+        return {
+            "status": "error",
+            "summary": str(e),
+        }
+
+
 def write_memory(session: SessionState, address: int, data: list[int]) -> dict:
     raw = bytes(data)
     session.probe.write_memory(address, raw)

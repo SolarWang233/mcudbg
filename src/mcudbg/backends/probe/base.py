@@ -89,3 +89,22 @@ class ProbeBackend(ABC):
 
     def read_fpu_registers(self) -> dict[str, Any]:
         raise NotImplementedError
+
+    def erase_flash(
+        self,
+        start_address: int | None = None,
+        end_address: int | None = None,
+        chip_erase: bool = False,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def program_flash(
+        self,
+        address: int,
+        data: bytes,
+        verify: bool = True,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def verify_flash(self, address: int, data: bytes) -> dict[str, Any]:
+        raise NotImplementedError
