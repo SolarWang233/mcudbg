@@ -7,10 +7,15 @@ def disconnect_all(session: SessionState) -> dict:
     results: dict[str, dict] = {}
     errors: dict[str, str] = {}
 
-    for name, action in {
+    actions: dict[str, object] = {
         "probe": session.probe.disconnect,
         "log": session.log.disconnect,
-    }.items():
+    }
+    gdb_server = getattr(session, "gdb_server", None)
+    if gdb_server is not None and hasattr(gdb_server, "stop"):
+        actions["gdb_server"] = gdb_server.stop
+
+    for name, action in actions.items():
         try:
             results[name] = action()
         except Exception as exc:

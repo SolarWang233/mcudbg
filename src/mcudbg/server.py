@@ -16,6 +16,10 @@ from .tools.configuration import load_demo_profile as _load_demo_profile
 from .tools.debug_loop import run_debug_loop as _run_debug_loop
 from .tools.diagnose import diagnose_hardfault as _diagnose_hardfault
 from .tools.diagnose import diagnose_startup_failure as _diagnose_startup_failure
+from .tools.diagnose_router import diagnose as _diagnose
+from .tools.gdb_server import get_gdb_server_status as _get_gdb_server_status
+from .tools.gdb_server import start_gdb_server as _start_gdb_server
+from .tools.gdb_server import stop_gdb_server as _stop_gdb_server
 from .tools.svd import svd_load as _svd_load
 from .tools.svd import svd_list_peripherals as _svd_list_peripherals
 from .tools.svd import svd_get_registers as _svd_get_registers
@@ -80,6 +84,9 @@ from .tools.probe import disassemble as _disassemble
 from .tools.probe import step_out as _step_out
 from .tools.probe import step_over as _step_over
 from .tools.probe import step_instruction as _step_instruction
+from .tools.probe import erase_flash as _erase_flash
+from .tools.probe import program_flash as _program_flash
+from .tools.probe import verify_flash as _verify_flash
 from .tools.probe import write_memory as _write_memory
 from .tools.probe import write_symbol_value as _write_symbol_value
 
@@ -172,6 +179,48 @@ async def build_project(timeout_seconds: int = 120) -> dict:
 @mcp.tool()
 async def flash_firmware(timeout_seconds: int = 120) -> dict:
     return _flash_firmware(session, timeout_seconds=timeout_seconds)
+
+
+@mcp.tool()
+async def start_gdb_server(
+    port: int = 3333,
+    telnet_port: int = 4444,
+    probe_server_port: int = 5555,
+    allow_remote: bool = False,
+    persist: bool = False,
+    target: str | None = None,
+    unique_id: str | None = None,
+    elf_path: str | None = None,
+) -> dict:
+    """Start a pyOCD GDB server for the configured target.
+
+    Uses the current probe config when target/unique_id are omitted.
+    Example: start_gdb_server()
+    Example: start_gdb_server(port=3334, persist=True)
+    """
+    return _start_gdb_server(
+        session,
+        port=port,
+        telnet_port=telnet_port,
+        probe_server_port=probe_server_port,
+        allow_remote=allow_remote,
+        persist=persist,
+        target=target,
+        unique_id=unique_id,
+        elf_path=elf_path,
+    )
+
+
+@mcp.tool()
+async def stop_gdb_server(timeout_seconds: float = 5.0) -> dict:
+    """Stop the active pyOCD GDB server process if one is running."""
+    return _stop_gdb_server(session, timeout_seconds=timeout_seconds)
+
+
+@mcp.tool()
+async def get_gdb_server_status() -> dict:
+    """Return whether the pyOCD GDB server is running and which ports it uses."""
+    return _get_gdb_server_status(session)
 
 
 @mcp.tool()
@@ -391,6 +440,55 @@ async def step_over() -> dict:
     Requires probe connected and target halted.
     """
     return _step_over(session)
+
+
+@mcp.tool()
+async def erase_flash(
+    start_address: int | None = None,
+    end_address: int | None = None,
+    chip_erase: bool = False,
+) -> dict:
+    """Erase target flash memory.
+
+    Use chip_erase=True to erase the whole chip, or provide start/end addresses for a range erase.
+    Requires probe connected.
+    """
+    return _erase_flash(
+        session,
+        start_address=start_address,
+        end_address=end_address,
+        chip_erase=chip_erase,
+    )
+
+
+@mcp.tool()
+async def program_flash(
+    address: int,
+    data: list[int],
+    verify: bool = True,
+) -> dict:
+    """Program target flash memory from raw byte data.
+
+    address: flash destination address
+    data: list of byte values (0-255)
+    verify: read back and compare after programming
+    Requires probe connected.
+    """
+    return _program_flash(session, address=address, data=data, verify=verify)
+
+
+@mcp.tool()
+async def verify_flash(
+    address: int,
+    data: list[int],
+) -> dict:
+    """Verify target flash contents against expected raw byte data.
+
+    address: flash start address
+    data: expected byte values (0-255)
+    Requires probe connected.
+    """
+    return _verify_flash(session, address=address, data=data)
 
 
 @mcp.tool()
@@ -920,6 +1018,33 @@ async def diagnose_startup_failure(
         log_tail_lines=log_tail_lines,
         resolve_symbols=resolve_symbols,
         suspected_stage=suspected_stage,
+    )
+
+
+@mcp.tool()
+async def diagnose(
+    symptom: str,
+    peripheral: str | None = None,
+    suspected_stage: str | None = None,
+    include_logs: bool = True,
+    auto_halt: bool = True,
+    stack_canary: int = 0xCCCCCCCC,
+) -> dict:
+    """Route a user-level symptom to the most relevant diagnosis tool.
+
+    Examples:
+    - diagnose("Board crashed into HardFault")
+    - diagnose("USART2 no output from TX pin", peripheral="USART2")
+    - diagnose("PLL clock switch is stuck")
+    """
+    return _diagnose(
+        session,
+        symptom=symptom,
+        peripheral=peripheral,
+        suspected_stage=suspected_stage,
+        include_logs=include_logs,
+        auto_halt=auto_halt,
+        stack_canary=stack_canary,
     )
 
 

@@ -8,6 +8,7 @@ from .backends.probe.pyocd_backend import PyOcdProbeBackend
 from .build_runtime import KeilBuildRuntime
 from .config import RuntimeConfig
 from .elf_manager import ElfManager
+from .gdb_server import GdbServerRuntime
 from .svd_manager import SvdManager
 
 
@@ -187,6 +188,7 @@ class SessionState:
     elf: ElfBackend = field(default_factory=ElfManager)
     svd: SvdBackend = field(default_factory=SvdManager)
     build: BuildRuntimeBackend = field(default_factory=KeilBuildRuntime)
+    gdb_server: GdbServerRuntime = field(default_factory=GdbServerRuntime)
     config: RuntimeConfig = field(default_factory=RuntimeConfig)
     memory_snapshots: dict[str, dict[str, Any]] = field(default_factory=dict)
 
