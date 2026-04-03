@@ -37,6 +37,8 @@ from .tools.probe import disconnect_probe as _disconnect_probe
 from .tools.probe import halt_target as _halt_target
 from .tools.probe import list_connected_probes as _list_connected_probes
 from .tools.probe import diagnose_memory_corruption as _diagnose_memory_corruption
+from .tools.probe import list_rtos_tasks as _list_rtos_tasks
+from .tools.probe import read_rtt_log as _read_rtt_log
 from .tools.probe import dump_memory as _dump_memory
 from .tools.probe import memory_snapshot as _memory_snapshot
 from .tools.probe import memory_diff as _memory_diff
@@ -409,6 +411,46 @@ async def diagnose_memory_corruption(stack_canary: int = 0xCCCCCCCC) -> dict:
     Requires ELF loaded and probe connected.
     """
     return _diagnose_memory_corruption(session, stack_canary=stack_canary)
+
+
+@mcp.tool()
+async def list_rtos_tasks(max_priorities: int = 32, task_name_len: int = 16) -> dict:
+    """List all FreeRTOS tasks with state, priority, and stack usage.
+
+    Walks pxReadyTasksLists, xDelayedTaskList*, and xSuspendedTaskList to enumerate
+    all tasks. Reads TCB fields: name, priority, stack base, stack top pointer.
+
+    max_priorities: upper bound for scanning pxReadyTasksLists (default 32).
+    task_name_len: configMAX_TASK_NAME_LEN in your FreeRTOS build (default 16).
+    Requires ELF loaded and probe connected with target halted.
+    """
+    return _list_rtos_tasks(session, max_priorities=max_priorities, task_name_len=task_name_len)
+
+
+@mcp.tool()
+async def read_rtt_log(
+    channel: int = 0,
+    max_bytes: int = 4096,
+    search_start: int = 0x20000000,
+    search_size: int = 0x50000,
+) -> dict:
+    """Read Segger RTT log output directly from target RAM via probe (no UART needed).
+
+    Scans the specified RAM range for the RTT control block ('SEGGER RTT' magic),
+    then reads the ring buffer of the requested up-channel.
+
+    channel: RTT up-channel index (default 0).
+    search_start: start of RAM scan (default 0x20000000).
+    search_size: bytes to scan (default 0x50000 = 320 KB).
+    Requires probe connected and target halted (or briefly halted to read).
+    """
+    return _read_rtt_log(
+        session,
+        channel=channel,
+        max_bytes=max_bytes,
+        search_start=search_start,
+        search_size=search_size,
+    )
 
 
 @mcp.tool()
