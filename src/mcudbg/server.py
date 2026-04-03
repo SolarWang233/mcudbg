@@ -52,6 +52,7 @@ from .tools.probe import addr_to_source as _addr_to_source
 from .tools.probe import set_breakpoint as _set_breakpoint
 from .tools.probe import source_step as _source_step
 from .tools.probe import backtrace as _backtrace
+from .tools.probe import run_to_source as _run_to_source
 from .tools.probe import disassemble as _disassemble
 from .tools.probe import step_out as _step_out
 from .tools.probe import step_over as _step_over
@@ -259,6 +260,19 @@ async def disassemble(address: int, count: int = 10) -> dict:
     Example: disassemble(0x08001234, 10)
     """
     return _disassemble(session, address=address, count=count)
+
+
+@mcp.tool()
+async def run_to_source(file: str, line: int, timeout_seconds: float = 10.0) -> dict:
+    """Run target until execution reaches a specific source file and line number.
+
+    Looks up the address for file:line in the DWARF line table, sets a
+    breakpoint there, and resumes. Matches on filename suffix so you can
+    pass just the basename (e.g. 'main.c') or a full path.
+    Requires ELF with DWARF loaded and probe connected.
+    Example: run_to_source('main.c', 42)
+    """
+    return _run_to_source(session, file=file, line=line, timeout_seconds=timeout_seconds)
 
 
 @mcp.tool()

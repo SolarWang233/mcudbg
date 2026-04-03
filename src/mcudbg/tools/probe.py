@@ -710,6 +710,41 @@ def step_over(session: SessionState, max_source_instructions: int = 100) -> dict
     return source_step(session, max_instructions=max_source_instructions)
 
 
+def run_to_source(
+    session: SessionState,
+    file: str,
+    line: int,
+    timeout_seconds: float = 10.0,
+) -> dict:
+    if not session.elf.is_loaded:
+        return {"status": "error", "summary": "ELF not loaded. Load an ELF file first."}
+    addrs = session.elf.source_to_addrs(file, line)
+    if not addrs:
+        return {
+            "status": "error",
+            "summary": f"No address found for {file}:{line}. Check file name and line number.",
+        }
+    target_addr = addrs[0]
+    session.probe.set_breakpoint(target_addr)
+    try:
+        result = session.probe.continue_target(
+            timeout_seconds=timeout_seconds, poll_interval_seconds=0.05
+        )
+    finally:
+        session.probe.clear_breakpoint(target_addr)
+    new_pc = int(result.get("pc", hex(target_addr)), 16)
+    src = session.elf.addr_to_source(new_pc)
+    sym = session.elf.resolve_address(new_pc)["symbol"]
+    return {
+        "status": "ok",
+        "summary": f"Ran to {file}:{line}.",
+        "pc": hex(new_pc),
+        "source": f"{src['file']}:{src['line']}" if src["file"] else None,
+        "symbol": sym,
+        "stop_reason": result.get("stop_reason"),
+    }
+
+
 def _resolve_breakpoint_address(
     session: SessionState,
     symbol: str | None = None,

@@ -59,6 +59,16 @@ class ElfManager:
             "source": f"{filename}:{line}" if filename is not None and line is not None else None,
         }
 
+    def source_to_addrs(self, filename: str, line: int) -> list[int]:
+        """Return all addresses in the line table matching the given file:line."""
+        matches = []
+        for addr, (file, ln) in zip(self._line_addrs, self._line_entries):
+            if ln != line:
+                continue
+            if file == filename or file.endswith("/" + filename) or file.endswith("\\" + filename):
+                matches.append(addr)
+        return matches
+
     def resolve_symbol(self, name: str) -> dict[str, Any]:
         match = next((s for s in self._all_symbols if s["name"] == name), None)
         return {
