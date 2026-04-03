@@ -81,8 +81,8 @@ class _HealthyElfManager:
 
     def resolve_address(self, address: int) -> dict:
         mapping = {
-            0x0800237E: {"symbol": "delay_us", "source": None},
-            0x08002351: {"symbol": "delay_ms", "source": None},
+            0x0800237E: {"symbol": "delay_us", "source": "app_main.c:123"},
+            0x08002351: {"symbol": "delay_ms", "source": "delay.c:45"},
         }
         return mapping.get(address, {"symbol": None, "source": None})
 
@@ -107,3 +107,4 @@ def test_startup_success_is_reported_when_logs_continue_normally() -> None:
     assert result["log_context"]["last_meaningful_line"] == "app loop running"
     assert "suspected_root_causes" not in result
     assert "suggested_next_steps" not in result
+    assert result["symbol_context"]["source"] == "app_main.c:123"

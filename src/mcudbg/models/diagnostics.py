@@ -20,7 +20,7 @@ class FaultRegisters(BaseModel):
 class SymbolContext(BaseModel):
     pc_symbol: str | None = None
     lr_symbol: str | None = None
-    source: dict[str, Any] | None = None
+    source: str | dict[str, Any] | None = None
 
 
 class LogContext(BaseModel):
