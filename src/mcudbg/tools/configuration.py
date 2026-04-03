@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ..config import RuntimeConfig, get_builtin_profiles
-from ..session import SessionState
+from ..session import SessionState, create_probe_backend
 
 
 def get_runtime_config(session: SessionState) -> dict:
@@ -45,12 +45,39 @@ def configure_probe(
     session: SessionState,
     target: str | None = None,
     unique_id: str | None = None,
+    backend: str | None = None,
+    jlink_dll_path: str | None = None,
 ) -> dict:
     """Set probe connection parameters (target chip name and optional probe serial)."""
+    next_backend = backend or session.config.probe.backend
+    next_jlink_dll_path = (
+        jlink_dll_path if jlink_dll_path is not None else session.config.probe.jlink_dll_path
+    )
+
+    recreate_probe = False
+    if backend is not None and backend != session.config.probe.backend:
+        recreate_probe = True
+    if next_backend == "jlink" and jlink_dll_path is not None:
+        recreate_probe = True
+
+    if recreate_probe:
+        try:
+            session.probe = create_probe_backend(
+                next_backend,
+                jlink_dll_path=next_jlink_dll_path,
+            )
+        except ValueError as exc:
+            return {
+                "status": "error",
+                "summary": str(exc),
+            }
+        session.config.probe.backend = next_backend
     if target is not None:
         session.config.probe.target = target
     if unique_id is not None:
         session.config.probe.unique_id = unique_id
+    if jlink_dll_path is not None:
+        session.config.probe.jlink_dll_path = jlink_dll_path
     return {
         "status": "ok",
         "summary": "Updated probe configuration.",

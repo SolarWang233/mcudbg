@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .backends.log.uart_backend import UartLogBackend
+from .backends.probe.jlink_backend import JLinkProbeBackend
 from .backends.probe.pyocd_backend import PyOcdProbeBackend
 from .build_runtime import KeilBuildRuntime
 from .config import RuntimeConfig
@@ -181,6 +182,14 @@ class BuildRuntimeBackend(Protocol):
         ...
 
 
+def create_probe_backend(name: str, jlink_dll_path: str | None = None) -> ProbeBackend:
+    if name == "pyocd":
+        return PyOcdProbeBackend()
+    if name == "jlink":
+        return JLinkProbeBackend(dll_path=jlink_dll_path)
+    raise ValueError(f"Unknown probe backend: {name}")
+
+
 @dataclass(slots=True)
 class SessionState:
     probe: ProbeBackend = field(default_factory=PyOcdProbeBackend)
@@ -194,4 +203,9 @@ class SessionState:
 
 
 def create_default_session() -> SessionState:
-    return SessionState()
+    session = SessionState()
+    session.probe = create_probe_backend(
+        session.config.probe.backend,
+        jlink_dll_path=session.config.probe.jlink_dll_path,
+    )
+    return session

@@ -111,9 +111,20 @@ async def load_demo_profile(profile_name: str) -> dict:
 
 
 @mcp.tool()
-async def configure_probe(target: str | None = None, unique_id: str | None = None) -> dict:
+async def configure_probe(
+    target: str | None = None,
+    unique_id: str | None = None,
+    backend: str | None = None,
+    jlink_dll_path: str | None = None,
+) -> dict:
     """Set probe connection parameters. Run list_connected_probes first to find unique_id."""
-    return _configure_probe(session, target=target, unique_id=unique_id)
+    return _configure_probe(
+        session,
+        target=target,
+        unique_id=unique_id,
+        backend=backend,
+        jlink_dll_path=jlink_dll_path,
+    )
 
 
 @mcp.tool()

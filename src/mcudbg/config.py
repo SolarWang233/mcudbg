@@ -9,6 +9,7 @@ class ProbeConfig(BaseModel):
     backend: str = "pyocd"
     target: str | None = None
     unique_id: str | None = None
+    jlink_dll_path: str | None = None
 
 
 class LogConfig(BaseModel):
