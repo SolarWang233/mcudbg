@@ -40,7 +40,7 @@ class PyOcdProbeBackend(ProbeBackend):
         self._target = None
         self._probe_name = "pyocd"
         self._breakpoints: set[int] = set()
-        self._watchpoints: set[int] = set()
+        self._watchpoints: dict[int, tuple[int, Any, str]] = {}
 
     def connect(self, target: str, unique_id: str | None = None) -> dict[str, Any]:
         if ConnectHelper is None:
@@ -250,7 +250,7 @@ class PyOcdProbeBackend(ProbeBackend):
         if wp_type is None:
             raise ValueError(f"Invalid watch_type '{watch_type}'. Use: read, write, read_write")
         self._target.set_watchpoint(address, size, wp_type)
-        self._watchpoints.add(address)
+        self._watchpoints[int(address)] = (int(size), wp_type, watch_type)
         return {
             'status': 'ok',
             'summary': f'Watchpoint set at {hex(address)}, size={size}, type={watch_type}.',
@@ -261,8 +261,12 @@ class PyOcdProbeBackend(ProbeBackend):
 
     def remove_watchpoint(self, address: int) -> dict[str, Any]:
         self._require_target()
-        self._target.remove_watchpoint(address)
-        self._watchpoints.discard(address)
+        watchpoint = self._watchpoints.get(int(address))
+        if watchpoint is None:
+            raise BackendUnavailableError(f"watchpoint at {hex(address)} is not set")
+        size, wp_type, _watch_type = watchpoint
+        self._target.remove_watchpoint(int(address), size, wp_type)
+        self._watchpoints.pop(int(address), None)
         return {
             'status': 'ok',
             'summary': f'Watchpoint removed at {hex(address)}.',
@@ -271,8 +275,8 @@ class PyOcdProbeBackend(ProbeBackend):
 
     def clear_all_watchpoints(self) -> dict[str, Any]:
         self._require_target()
-        for address in list(self._watchpoints):
-            self._target.remove_watchpoint(address)
+        for address, (size, wp_type, _watch_type) in list(self._watchpoints.items()):
+            self._target.remove_watchpoint(address, size, wp_type)
         cleared = len(self._watchpoints)
         self._watchpoints.clear()
         return {

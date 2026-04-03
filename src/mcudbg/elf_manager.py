@@ -136,6 +136,21 @@ class ElfManager:
             funcs = [f for f in funcs if low in f["name"].lower()]
         return [{"name": f["name"], "address": hex(f["address"]), "size": f["size"]} for f in funcs]
 
+    def symbol_info(self, name: str) -> dict[str, Any]:
+        """Return address, size, type, source location for a symbol."""
+        match = next((s for s in self._all_symbols if s["name"] == name), None)
+        if match is None:
+            return {"found": False, "name": name}
+        src = self.addr_to_source(match["address"])
+        return {
+            "found": True,
+            "name": name,
+            "address": hex(match["address"]),
+            "size": match["size"],
+            "type": match.get("type", "unknown"),
+            "source": f"{src['file']}:{src['line']}" if src["file"] else None,
+        }
+
     def get_section_data(self) -> list[dict[str, Any]]:
         """Return loadable PROGBITS sections with their binary content."""
         if not self.is_loaded:
@@ -165,14 +180,26 @@ class ElfManager:
         sections = []
         with self._path.open("rb") as handle:
             elf = ELFFile(handle)
+            load_segments = [
+                segment for segment in elf.iter_segments()
+                if segment["p_type"] == "PT_LOAD"
+            ]
             for section in elf.iter_sections():
                 if section["sh_size"] == 0:
                     continue
+                vma = int(section["sh_addr"])
+                lma = None
+                for segment in load_segments:
+                    seg_vma = int(segment["p_vaddr"])
+                    seg_memsz = int(segment["p_memsz"])
+                    if seg_vma <= vma < seg_vma + max(seg_memsz, 1):
+                        lma = int(segment["p_paddr"]) + (vma - seg_vma)
+                        break
                 sections.append({
                     "name": section.name,
-                    "vma": hex(section["sh_addr"]),
+                    "vma": hex(vma),
+                    "lma": None if lma is None else hex(lma),
                     "size": section["sh_size"],
-                    "type": section["sh_type"],
                 })
         return sections
 
@@ -456,7 +483,12 @@ class ElfManager:
             return [], []
 
         entries: list[dict[str, Any]] = []
-        for cfi_entry in dwarf.CFI_entries():
+        try:
+            cfi_entries = dwarf.CFI_entries()
+        except Exception:
+            return [], []
+
+        for cfi_entry in cfi_entries:
             if not isinstance(cfi_entry, _FDE):
                 continue
             try:

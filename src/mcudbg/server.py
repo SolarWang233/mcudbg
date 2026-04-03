@@ -47,6 +47,7 @@ from .tools.probe import log_trace as _log_trace
 from .tools.probe import reset_and_trace as _reset_and_trace
 from .tools.probe import read_stack_usage as _read_stack_usage
 from .tools.probe import elf_list_functions as _elf_list_functions
+from .tools.probe import elf_symbol_info as _elf_symbol_info
 from .tools.probe import list_rtos_tasks as _list_rtos_tasks
 from .tools.probe import rtos_task_context as _rtos_task_context
 from .tools.probe import read_rtt_log as _read_rtt_log
@@ -72,7 +73,9 @@ from .tools.probe import backtrace as _backtrace
 from .tools.probe import dwarf_backtrace as _dwarf_backtrace
 from .tools.probe import get_locals as _get_locals
 from .tools.probe import set_local as _set_local
+from .tools.probe import run_to_function as _run_to_function
 from .tools.probe import run_to_source as _run_to_source
+from .tools.probe import set_breakpoints_for_function_range as _set_bp_range
 from .tools.probe import disassemble as _disassemble
 from .tools.probe import step_out as _step_out
 from .tools.probe import step_over as _step_over
@@ -208,6 +211,16 @@ async def set_breakpoint(symbol: str | None = None, address: int | None = None) 
 
 
 @mcp.tool()
+async def set_breakpoints_for_function_range(start_symbol: str, end_symbol: str) -> dict:
+    """Set breakpoints on all ELF functions whose address falls between two symbols.
+
+    Useful for tracing all calls within a module (e.g. start=_uart_start, end=_uart_end).
+    Requires ELF loaded and probe connected.
+    """
+    return _set_bp_range(session, start_symbol=start_symbol, end_symbol=end_symbol)
+
+
+@mcp.tool()
 async def clear_breakpoint(symbol: str | None = None, address: int | None = None) -> dict:
     return _clear_breakpoint(session, symbol=symbol, address=address)
 
@@ -318,6 +331,18 @@ async def run_to_source(file: str, line: int, timeout_seconds: float = 10.0) -> 
     Example: run_to_source('main.c', 42)
     """
     return _run_to_source(session, file=file, line=line, timeout_seconds=timeout_seconds)
+
+
+@mcp.tool()
+async def run_to_function(name: str, timeout_seconds: float = 10.0) -> dict:
+    """Set a breakpoint on a function by name, resume, and wait for it to be hit.
+
+    Combines set_breakpoint + continue_target into one step.
+    Requires ELF loaded and probe connected.
+    Example: run_to_function('HAL_UART_Transmit')
+    Example: run_to_function('main', timeout_seconds=3.0)
+    """
+    return _run_to_function(session, name=name, timeout_seconds=timeout_seconds)
 
 
 @mcp.tool()
@@ -502,16 +527,26 @@ async def reset_and_trace(max_steps: int = 200, max_lines: int = 50) -> dict:
 
 
 @mcp.tool()
-async def read_stack_usage(canary: int = 0xa5a5a5a5, task_name_len: int = 16) -> dict:
+async def read_stack_usage(
+    canary: int = 0xa5a5a5a5,
+    task_name_len: int = 16,
+    max_priorities: int = 32,
+) -> dict:
     """Scan FreeRTOS task stacks for the canary high-water mark.
 
     FreeRTOS fills unused stack with 0xa5 (tskSTACK_FILL_BYTE).
     Scans each task's stack from base upward and counts intact canary words.
-    Reports min_free_bytes (never-used stack) and min_used_bytes per task.
+    Reports min_free_bytes (never-used stack) per task.
     canary: fill byte pattern used at init (default 0xa5a5a5a5).
+    max_priorities: upper bound for scanning pxReadyTasksLists (default 32).
     Requires ELF loaded and probe connected with target halted.
     """
-    return _read_stack_usage(session, canary=canary, task_name_len=task_name_len)
+    return _read_stack_usage(
+        session,
+        canary=canary,
+        task_name_len=task_name_len,
+        max_priorities=max_priorities,
+    )
 
 
 @mcp.tool()
@@ -524,6 +559,19 @@ async def elf_list_functions(name_filter: str | None = None) -> dict:
     Requires ELF loaded (no probe needed).
     """
     return _elf_list_functions(session, name_filter=name_filter)
+
+
+@mcp.tool()
+async def elf_symbol_info(name: str) -> dict:
+    """Return address, size, type, and source location for a single symbol.
+
+    Looks up the exact symbol name in the ELF symbol table.
+    Useful for checking a variable's address before setting a watchpoint.
+    Example: elf_symbol_info('g_uart_handle')
+    Example: elf_symbol_info('SystemCoreClock')
+    Requires ELF loaded (no probe needed).
+    """
+    return _elf_symbol_info(session, name=name)
 
 
 @mcp.tool()

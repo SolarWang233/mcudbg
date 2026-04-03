@@ -350,37 +350,9 @@ def read_memory_map(session: SessionState) -> dict:
     """Return Cortex-M address space regions and ELF section layout (if loaded)."""
     elf_sections: list[dict] = []
     elf_sections_error = None
-    elf_path = getattr(session.elf, "_path", None)
-    if session.elf.is_loaded and elf_path is not None:
+    if session.elf.is_loaded and hasattr(session.elf, "get_sections"):
         try:
-            from elftools.elf.elffile import ELFFile
-
-            with elf_path.open("rb") as handle:
-                elf = ELFFile(handle)
-                load_segments = [segment for segment in elf.iter_segments() if segment["p_type"] == "PT_LOAD"]
-                for section in elf.iter_sections():
-                    vma = int(section["sh_addr"])
-                    size = int(section["sh_size"])
-                    flags = int(section["sh_flags"])
-                    if not (flags & 0x2) and vma == 0 and size == 0:
-                        continue
-
-                    lma = None
-                    for segment in load_segments:
-                        seg_vma = int(segment["p_vaddr"])
-                        seg_memsz = int(segment["p_memsz"])
-                        if seg_vma <= vma < seg_vma + max(seg_memsz, 1):
-                            lma = int(segment["p_paddr"]) + (vma - seg_vma)
-                            break
-
-                    elf_sections.append({
-                        "name": section.name,
-                        "vma": hex(vma),
-                        "lma": None if lma is None else hex(lma),
-                        "size": size,
-                        "type": str(section["sh_type"]),
-                        "flags": flags,
-                    })
+            elf_sections = session.elf.get_sections()
         except Exception as e:
             elf_sections_error = str(e)
 
@@ -579,104 +551,159 @@ def reset_and_trace(
     return result
 
 
+_FREERTOS_LIST_T_SIZE = 20
+_FREERTOS_LIST_END_OFFSET = 8
+_FREERTOS_LIST_ITEM_NEXT_OFFSET = 4
+_FREERTOS_LIST_ITEM_OWNER_OFFSET = 12
+_TCB_TOP_OF_STACK = 0x00
+_TCB_PRIORITY = 0x2C
+_TCB_STACK_BASE = 0x30
+_TCB_NAME = 0x34
+
+
+def _resolve_symbol_addr(session: SessionState, name: str) -> int | None:
+    resolved = session.elf.resolve_symbol(name)
+    return int(resolved["address"], 16) if resolved["address"] is not None else None
+
+
+def _read_u32(session: SessionState, address: int) -> int:
+    return int.from_bytes(session.probe.read_memory(address, 4), "little")
+
+
+def _walk_freertos_list(session: SessionState, list_addr: int) -> list[int]:
+    owners: list[int] = []
+    try:
+        n_items = _read_u32(session, list_addr)
+        if n_items == 0 or n_items > 512:
+            return owners
+        end_addr = list_addr + _FREERTOS_LIST_END_OFFSET
+        cur = _read_u32(session, end_addr + _FREERTOS_LIST_ITEM_NEXT_OFFSET)
+        for _ in range(min(n_items, 512)):
+            if cur == 0 or cur == end_addr:
+                break
+            owner = _read_u32(session, cur + _FREERTOS_LIST_ITEM_OWNER_OFFSET)
+            if owner and owner not in owners:
+                owners.append(owner)
+            cur = _read_u32(session, cur + _FREERTOS_LIST_ITEM_NEXT_OFFSET)
+    except Exception:
+        pass
+    return owners
+
+
+def _collect_freertos_tcb_states(
+    session: SessionState,
+    max_priorities: int = 32,
+) -> tuple[dict[int, str], int | None]:
+    current_tcb_ptr = _resolve_symbol_addr(session, "pxCurrentTCB")
+    if current_tcb_ptr is None:
+        raise LookupError("Symbol 'pxCurrentTCB' not found — is this a FreeRTOS target?")
+
+    running_tcb = _read_u32(session, current_tcb_ptr)
+    tcb_addrs: dict[int, str] = {}
+
+    ready_list_ptr = _resolve_symbol_addr(session, "pxReadyTasksLists")
+    if ready_list_ptr is not None:
+        for pri in range(max_priorities):
+            list_addr = ready_list_ptr + pri * _FREERTOS_LIST_T_SIZE
+            for addr in _walk_freertos_list(session, list_addr):
+                tcb_addrs.setdefault(addr, "ready")
+
+    for sym in ("xDelayedTaskList1", "xDelayedTaskList2", "pxDelayedTaskList", "pxOverflowDelayedTaskList"):
+        ptr = _resolve_symbol_addr(session, sym)
+        if ptr is None:
+            continue
+        try:
+            target = _read_u32(session, ptr) if sym.startswith("px") else ptr
+        except Exception:
+            continue
+        for addr in _walk_freertos_list(session, target):
+            tcb_addrs.setdefault(addr, "blocked")
+
+    sus_ptr = _resolve_symbol_addr(session, "xSuspendedTaskList")
+    if sus_ptr is not None:
+        for addr in _walk_freertos_list(session, sus_ptr):
+            tcb_addrs.setdefault(addr, "suspended")
+
+    if running_tcb:
+        tcb_addrs[running_tcb] = "running"
+
+    return tcb_addrs, running_tcb
+
+
+def _read_freertos_task_name(session: SessionState, tcb_addr: int, task_name_len: int) -> str:
+    name_bytes = session.probe.read_memory(tcb_addr + _TCB_NAME, task_name_len)
+    return name_bytes.split(b"\x00")[0].decode("utf-8", errors="replace")
+
+
 def read_stack_usage(
     session: SessionState,
     canary: int = 0xa5a5a5a5,
     task_name_len: int = 16,
+    max_priorities: int = 32,
 ) -> dict:
     """Scan each FreeRTOS task's stack for the canary high-water mark.
 
     FreeRTOS initialises unused stack with tskSTACK_FILL_BYTE (0xa5).
     Scans from pxStack (base) upward to find the first non-canary word.
-    min_free_bytes = bytes of untouched canary from base.
+    Reports the minimum untouched stack bytes that remain from the low address.
+    The standard Cortex-M TCB layout does not reliably expose the total stack size.
     """
     if not session.elf.is_loaded:
         return {"status": "error", "summary": "ELF not loaded."}
 
-    def _sym(name: str) -> int | None:
-        r = session.elf.resolve_symbol(name)
-        return int(r["address"], 16) if r["address"] is not None else None
+    try:
+        tcb_addrs, _ = _collect_freertos_tcb_states(session, max_priorities=max_priorities)
+    except LookupError as exc:
+        return {"status": "error", "summary": str(exc)}
+    except Exception as exc:
+        return {"status": "error", "summary": f"Failed to enumerate FreeRTOS tasks: {exc}"}
 
-    def read32(addr: int) -> int:
-        return int.from_bytes(session.probe.read_memory(addr, 4), "little")
-
-    LIST_ITEM_NEXT, LIST_ITEM_OWNER = 4, 12
-
-    def walk_list(list_addr: int) -> list[int]:
-        owners: list[int] = []
-        try:
-            n = read32(list_addr)
-            if n == 0 or n > 512:
-                return owners
-            end = list_addr + 8
-            cur = read32(end + LIST_ITEM_NEXT)
-            for _ in range(min(n, 512)):
-                if cur == 0 or cur == end:
-                    break
-                o = read32(cur + LIST_ITEM_OWNER)
-                if o:
-                    owners.append(o)
-                cur = read32(cur + LIST_ITEM_NEXT)
-        except Exception:
-            pass
-        return owners
-
-    all_tcbs: set[int] = set()
-    ready_ptr = _sym("pxReadyTasksLists")
-    if ready_ptr:
-        for pri in range(32):
-            for a in walk_list(ready_ptr + pri * 20):
-                all_tcbs.add(a)
-    for sym in ("xDelayedTaskList1", "xDelayedTaskList2", "xSuspendedTaskList"):
-        ptr = _sym(sym)
-        if ptr:
-            for a in walk_list(ptr):
-                all_tcbs.add(a)
-    cur_ptr = _sym("pxCurrentTCB")
-    if cur_ptr:
-        try:
-            all_tcbs.add(read32(cur_ptr))
-        except Exception:
-            pass
-
-    if not all_tcbs:
-        return {"status": "error", "summary": "No FreeRTOS tasks found. Is pxCurrentTCB in ELF?"}
+    if not tcb_addrs:
+        return {"status": "error", "summary": "No FreeRTOS tasks found. Is the scheduler running?"}
 
     canary_bytes = canary.to_bytes(4, "little")
     tasks: list[dict] = []
-    for tcb in all_tcbs:
+    for tcb in tcb_addrs:
         try:
-            top_of_stack = read32(tcb)
-            stack_base   = read32(tcb + 0x30)
-            name_raw     = session.probe.read_memory(tcb + 0x34, task_name_len)
-            name = name_raw.split(b"\x00")[0].decode("utf-8", errors="replace")
+            top_of_stack = _read_u32(session, tcb + _TCB_TOP_OF_STACK)
+            stack_base = _read_u32(session, tcb + _TCB_STACK_BASE)
+            name = _read_freertos_task_name(session, tcb, task_name_len)
         except Exception as e:
             tasks.append({"tcb_address": hex(tcb), "error": str(e)})
             continue
 
-        stack_size = top_of_stack - stack_base if top_of_stack > stack_base else None
         min_free: int | None = None
-        if stack_base and stack_size and 0 < stack_size <= 65536:
-            try:
-                raw = session.probe.read_memory(stack_base, stack_size)
-                free_words = 0
+        if stack_base:
+            free_words = 0
+            scan_started = False
+            offset = 0
+            while offset < 65536:
+                try:
+                    raw = session.probe.read_memory(stack_base + offset, 256)
+                    scan_started = True
+                except Exception:
+                    break
+                if not raw:
+                    break
+                stop = False
                 for i in range(0, len(raw) - 3, 4):
-                    if raw[i:i+4] == canary_bytes:
+                    if raw[i : i + 4] == canary_bytes:
                         free_words += 1
+                        offset += 4
                     else:
+                        stop = True
                         break
+                if stop or len(raw) < 4:
+                    break
+            if scan_started:
                 min_free = free_words * 4
-            except Exception:
-                pass
 
         tasks.append({
             "name": name,
             "tcb_address": hex(tcb),
             "stack_base": hex(stack_base),
             "top_of_stack": hex(top_of_stack),
-            "stack_size_bytes": stack_size,
             "min_free_bytes": min_free,
-            "min_used_bytes": (stack_size - min_free) if (stack_size and min_free is not None) else None,
         })
 
     tasks.sort(key=lambda t: t.get("name", ""))
@@ -698,6 +725,23 @@ def elf_list_functions(session: SessionState, name_filter: str | None = None) ->
         "summary": f"{len(funcs)} function(s) found" + (f" matching '{name_filter}'." if name_filter else "."),
         "count": len(funcs),
         "functions": funcs,
+    }
+
+
+def elf_symbol_info(session: SessionState, name: str) -> dict:
+    """Look up detailed info for a single symbol by exact name."""
+    if not session.elf.is_loaded:
+        return {"status": "error", "summary": "ELF not loaded."}
+    info = session.elf.symbol_info(name)
+    if not info["found"]:
+        return {
+            "status": "error",
+            "summary": f"Symbol '{name}' not found in ELF.",
+        }
+    return {
+        "status": "ok",
+        "summary": f"Symbol '{name}' at {info['address']}, size={info['size']}.",
+        **{k: v for k, v in info.items() if k != "found"},
     }
 
 
@@ -1165,7 +1209,7 @@ def read_fpu_registers(session: SessionState) -> dict:
         "status": "ok",
         "summary": "Read FPU registers.",
         "registers": {
-            name: hex(value) if value is not None else None
+            name: hex(value) if isinstance(value, int) else value
             for name, value in values.items()
         },
     }
@@ -1832,10 +1876,55 @@ def run_to_source(
     }
 
 
+def run_to_function(
+    session: SessionState,
+    name: str,
+    timeout_seconds: float = 10.0,
+) -> dict:
+    try:
+        if session.elf.is_loaded:
+            resolved = session.elf.resolve_symbol(name)
+            if resolved["address"] is None:
+                return {"status": "error", "summary": f"Symbol '{name}' not found in ELF."}
+        else:
+            return {"status": "error", "summary": "ELF not loaded."}
+
+        addr = int(resolved["address"], 16) & ~1
+        session.probe.set_breakpoint(addr)
+        try:
+            result = session.probe.continue_target(
+                timeout_seconds=timeout_seconds,
+                poll_interval_seconds=0.05,
+            )
+        finally:
+            session.probe.clear_breakpoint(addr)
+
+        new_pc = int(result.get("pc", hex(addr)), 16)
+        if session.elf.is_loaded:
+            src = session.elf.addr_to_source(new_pc)
+            sym = session.elf.resolve_address(new_pc).get("symbol")
+        else:
+            src = {"file": None, "line": None}
+            sym = None
+        return {
+            "status": "ok",
+            "summary": f"Ran to function '{name}' at {hex(new_pc)}.",
+            "function": name,
+            "address": hex(addr),
+            "pc": hex(new_pc),
+            "stop_reason": result.get("stop_reason"),
+            "symbol": sym,
+            "source": f"{src['file']}:{src['line']}" if src["file"] else None,
+        }
+    except Exception as e:
+        return {"status": "error", "summary": str(e)}
+
+
 def rtos_task_context(
     session: SessionState,
     task_name: str,
     task_name_len: int = 16,
+    max_priorities: int = 32,
 ) -> dict:
     """Read saved register context of a blocked/suspended FreeRTOS task.
 
@@ -1848,65 +1937,18 @@ def rtos_task_context(
     """
     if not session.elf.is_loaded:
         return {"status": "error", "summary": "ELF not loaded."}
-
-    def _sym(name: str) -> int | None:
-        r = session.elf.resolve_symbol(name)
-        return int(r["address"], 16) if r["address"] is not None else None
-
-    def read32(addr: int) -> int:
-        return int.from_bytes(session.probe.read_memory(addr, 4), "little")
-
-    # --- walk all FreeRTOS lists to collect TCB addresses ---
-    LIST_ITEM_NEXT = 4
-    LIST_ITEM_OWNER = 12
-
-    def walk_list(list_addr: int) -> list[int]:
-        owners: list[int] = []
-        try:
-            n = read32(list_addr)
-            if n == 0 or n > 512:
-                return owners
-            end_addr = list_addr + 8
-            cur = read32(end_addr + LIST_ITEM_NEXT)
-            for _ in range(min(n, 512)):
-                if cur == 0 or cur == end_addr:
-                    break
-                owner = read32(cur + LIST_ITEM_OWNER)
-                if owner:
-                    owners.append(owner)
-                cur = read32(cur + LIST_ITEM_NEXT)
-        except Exception:
-            pass
-        return owners
-
-    all_tcbs: set[int] = set()
-    ready_ptr = _sym("pxReadyTasksLists")
-    if ready_ptr:
-        for pri in range(32):
-            for a in walk_list(ready_ptr + pri * 20):
-                all_tcbs.add(a)
-    for sym in ("xDelayedTaskList1", "xDelayedTaskList2", "xSuspendedTaskList"):
-        ptr = _sym(sym)
-        if ptr:
-            for a in walk_list(ptr):
-                all_tcbs.add(a)
-
-    current_tcb_ptr = _sym("pxCurrentTCB")
-    current_tcb: int | None = None
     try:
-        if current_tcb_ptr:
-            current_tcb = read32(current_tcb_ptr)
-            all_tcbs.add(current_tcb)
-    except Exception:
-        pass
+        tcb_addrs, current_tcb = _collect_freertos_tcb_states(session, max_priorities=max_priorities)
+    except LookupError as exc:
+        return {"status": "error", "summary": str(exc)}
+    except Exception as exc:
+        return {"status": "error", "summary": f"Failed to enumerate FreeRTOS tasks: {exc}"}
 
     # --- find TCB matching task_name ---
-    TCB_NAME = 0x34
     target_tcb: int | None = None
-    for tcb_addr in all_tcbs:
+    for tcb_addr in tcb_addrs:
         try:
-            raw = session.probe.read_memory(tcb_addr + TCB_NAME, task_name_len)
-            name = raw.split(b"\x00")[0].decode("utf-8", errors="replace")
+            name = _read_freertos_task_name(session, tcb_addr, task_name_len)
             if name == task_name:
                 target_tcb = tcb_addr
                 break
@@ -1924,7 +1966,7 @@ def rtos_task_context(
             resolved = session.elf.resolve_address(core["pc"] & ~1)
             return {
                 "status": "ok",
-                "summary": f"Task '{task_name}' is currently running — live registers returned.",
+                "summary": f"Task '{task_name}' is currently running; live registers returned.",
                 "task_name": task_name,
                 "tcb_address": hex(target_tcb),
                 "state": "running",
@@ -1941,11 +1983,11 @@ def rtos_task_context(
     #   no-FPU (EXC_RETURN bit4=1): SW frame at +0, EXC_RETURN at +32, HW frame at +36
     #   FPU    (EXC_RETURN bit4=0): S16-S31 at +0..+63, SW frame at +64, EXC_RETURN at +96, HW frame at +100
     try:
-        tos = read32(target_tcb)  # pxTopOfStack is first TCB field
+        tos = _read_u32(session, target_tcb + _TCB_TOP_OF_STACK)  # pxTopOfStack is first TCB field
 
         # Detect FPU by checking EXC_RETURN at both possible positions
-        exc_nofpu = read32(tos + 32)
-        exc_fpu   = read32(tos + 96)
+        exc_nofpu = _read_u32(session, tos + 32)
+        exc_fpu = _read_u32(session, tos + 96)
         is_exc = lambda v: (v & 0xFFFFFF00) == 0xFFFFFF00  # noqa: E731
 
         if is_exc(exc_nofpu):
@@ -1963,16 +2005,16 @@ def rtos_task_context(
 
         hw_base = sw_base + 36          # 9 words: R4-R11 (8) + EXC_RETURN (1)
 
-        r4  = read32(sw_base +  0);  r5  = read32(sw_base +  4)
-        r6  = read32(sw_base +  8);  r7  = read32(sw_base + 12)
-        r8  = read32(sw_base + 16);  r9  = read32(sw_base + 20)
-        r10 = read32(sw_base + 24);  r11 = read32(sw_base + 28)
+        r4 = _read_u32(session, sw_base + 0); r5 = _read_u32(session, sw_base + 4)
+        r6 = _read_u32(session, sw_base + 8); r7 = _read_u32(session, sw_base + 12)
+        r8 = _read_u32(session, sw_base + 16); r9 = _read_u32(session, sw_base + 20)
+        r10 = _read_u32(session, sw_base + 24); r11 = _read_u32(session, sw_base + 28)
 
-        r0   = read32(hw_base +  0);  r1  = read32(hw_base +  4)
-        r2   = read32(hw_base +  8);  r3  = read32(hw_base + 12)
-        r12  = read32(hw_base + 16);  lr  = read32(hw_base + 20)
-        pc   = read32(hw_base + 24) & ~1
-        xpsr = read32(hw_base + 28)
+        r0 = _read_u32(session, hw_base + 0); r1 = _read_u32(session, hw_base + 4)
+        r2 = _read_u32(session, hw_base + 8); r3 = _read_u32(session, hw_base + 12)
+        r12 = _read_u32(session, hw_base + 16); lr = _read_u32(session, hw_base + 20)
+        pc = _read_u32(session, hw_base + 24) & ~1
+        xpsr = _read_u32(session, hw_base + 28)
 
         # SP as it was at context switch (after popping full hw frame)
         # Extended hw frame (FPU): 8 std + S0-S15(16) + FPSCR(1) + pad(1) = 26 words = 104 B
@@ -2142,6 +2184,51 @@ def list_rtos_tasks(
         "task_count": len(tasks),
         "reported_task_count": num_tasks,
         "tasks": tasks,
+    }
+
+
+def set_breakpoints_for_function_range(
+    session: SessionState,
+    start_symbol: str,
+    end_symbol: str,
+) -> dict:
+    if not session.elf.is_loaded:
+        return {"status": "error", "summary": "ELF not loaded."}
+
+    start_resolved = session.elf.resolve_symbol(start_symbol)
+    if start_resolved["address"] is None:
+        return {"status": "error", "summary": f"Symbol '{start_symbol}' not found in ELF."}
+
+    end_resolved = session.elf.resolve_symbol(end_symbol)
+    if end_resolved["address"] is None:
+        return {"status": "error", "summary": f"Symbol '{end_symbol}' not found in ELF."}
+
+    start_addr = int(start_resolved["address"], 16)
+    end_addr = int(end_resolved["address"], 16)
+    functions = session.elf.list_functions()
+    selected = [
+        func
+        for func in functions
+        if start_addr <= int(func["address"], 16) < end_addr
+    ]
+
+    set_list: list[dict[str, str]] = []
+    failed_list: list[dict[str, str]] = []
+    for func in selected:
+        func_addr = int(func["address"], 16) & ~1
+        try:
+            session.probe.set_breakpoint(func_addr)
+            set_list.append({"name": func["name"], "address": hex(func_addr)})
+        except Exception as e:
+            failed_list.append(
+                {"name": func["name"], "address": hex(func_addr), "error": str(e)}
+            )
+
+    return {
+        "status": "ok",
+        "summary": f"Set {len(set_list)} breakpoint(s) between {start_symbol} and {end_symbol}.",
+        "set": set_list,
+        "failed": failed_list,
     }
 
 
