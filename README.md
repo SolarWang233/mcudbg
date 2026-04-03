@@ -2,71 +2,157 @@
 
 **Let AI debug your embedded board.**
 
-`mcudbg` is an MCP server that gives AI assistants direct access to embedded hardware — debug probes, UART logs, ELF symbols, and peripheral registers — so AI can observe, diagnose, and help fix real board problems.
+`mcudbg` is an MCP server for embedded debugging. It gives AI assistants direct access to the things that matter on real hardware: debug probes, CPU registers, memory, ELF/DWARF symbols, UART logs, and peripheral registers.
 
 > Human connects the wires. AI debugs the board.
 
----
+## What mcudbg is for
 
-## What It Does
+Most AI coding tools stop at generating firmware. Real embedded failures happen after flashing:
 
-Most AI tools stop at writing firmware. Real embedded problems happen on the board:
+- the board does not boot
+- there is no UART output
+- the firmware crashes into `HardFault`
+- a peripheral is configured wrong
+- execution is stuck in startup code, an ISR, or a loop
 
-- no boot log
-- startup crash or hardfault
-- peripheral not responding (UART, SPI, I2C, GPIO)
-- firmware stuck in a loop
+`mcudbg` is built so an AI assistant can observe the board, inspect evidence, and guide the next debugging step instead of guessing from source code alone.
 
-`mcudbg` gives AI the tools to actually investigate these problems — not just explain them from code.
+## Current capabilities
 
-```
-User: "This STM32L4 board won't boot. Help me find out why."
+### Probe and execution control
 
-AI: reads UART log → halts CPU → reads fault registers →
-    loads ELF symbols → reads USART2 register state →
-    "CR1.UE=0, transmitter disabled — UART was never initialized"
-```
+- connect to `pyOCD`-supported probes such as ST-Link and CMSIS-DAP
+- halt, resume, reset, single-step, step over, and step out
+- set and clear breakpoints by symbol or address
+- set hardware watchpoints
+- continue until an address or condition is hit
 
----
+### ELF and DWARF
 
-## Capabilities
+- load ELF or AXF files for symbol resolution
+- resolve addresses to function names and source lines
+- source-level single step with `.debug_line`
+- run directly to a source line or function
+- disassemble code with source annotations
+- list functions and inspect individual symbols
+- read locals with DWARF debug info
+- build heuristic and DWARF-based backtraces
 
-### Phase 1 — Probe + Log + Fault Diagnosis
-- Connect to target via `pyOCD`-supported probe (ST-Link, CMSIS-DAP, etc.)
-- Halt, resume, reset, step target
-- Read CPU registers and Cortex-M fault registers (CFSR, HFSR, MMFAR, BFAR)
-- Read and write target memory
-- Set and clear breakpoints
-- Load ELF/AXF and resolve PC addresses to function names
-- Connect to UART and tail logs in real time
-- `diagnose_hardfault` — structured fault analysis with evidence
-- `diagnose_startup_failure` — startup stage analysis
+### Memory and state inspection
 
-### Phase 2 — SVD Peripheral Register Inspection
-- Load any CMSIS-SVD file (available in your chip vendor's SDK or Keil MDK pack)
-- `svd_list_peripherals` — list all peripherals defined in the SVD
-- `svd_get_registers` — inspect register layout without touching hardware
-- `svd_read_peripheral` — read all register values from hardware, decoded field by field
-- Automatic diagnosis for UART, SPI, I2C, GPIO peripherals
+- read and write target memory
+- dump memory in multiple formats
+- snapshot memory and diff it later
+- find byte patterns in RAM
+- compare ELF sections against flash contents
+- inspect stopped CPU context, FPU registers, and MPU regions
+- read symbol values directly from target memory
 
----
+### SVD-based peripheral inspection
 
-## Quick Example
+- load CMSIS-SVD files
+- list peripherals and register layouts
+- read decoded peripheral register state from hardware
+- write full registers or individual fields with read-modify-write
+- diagnose common peripheral issues such as clock gating or bad pin config
 
-```
-# AI workflow for "UART not printing anything"
+### Diagnosis tools
 
-svd_load('/path/to/STM32L4x6.svd')
-svd_read_peripheral('USART2')
+- `diagnose_hardfault`
+- `diagnose_startup_failure`
+- `diagnose_memory_corruption`
+- `diagnose_stack_overflow`
+- `diagnose_interrupt_issue`
+- `diagnose_clock_issue`
+- `diagnose_peripheral_stuck`
 
-# Returns:
-# CR1 = 0x0000  [UE=0, TE=0, RE=0]
-# BRR = 0x0000
-# Diagnosis: "USART is disabled (CR1.UE=0). Enable with CR1.UE=1."
-#            "Transmitter is disabled (CR1.TE=0). No TX output possible."
-```
+### RTOS and RTT entry points
 
----
+- FreeRTOS task listing and task-context inspection
+- Segger RTT log scanning and reading
+
+These tools are implemented. They still require a matching firmware image to validate on hardware.
+
+### Build and flash
+
+- Keil UV4 build integration
+- Keil UV4 flash integration
+- combined debug loop support from MCP
+
+## Real hardware status
+
+The project has been exercised on real hardware, not just mocks.
+
+Validated setup:
+
+- target: `STM32L496VETx`
+- board: `ATK_PICTURE`
+- probe: `ST-Link`
+- ELF: `ATK_PICTURE.axf`
+
+Confirmed on hardware:
+
+- ELF loading and symbol resolution
+- DWARF source mapping
+- `source_step`
+- `run_to_function`
+- `elf_symbol_info`
+- `set_breakpoints_for_function_range`
+- `disassemble`
+- `read_memory_map`
+- `probe_read_mpu_regions`
+- `probe_set_watchpoint`
+- `probe_remove_watchpoint`
+- `probe_clear_all_watchpoints`
+- `probe_read_fpu_registers`
+- `read_rtt_log`
+- `list_rtos_tasks`
+- `rtos_task_context`
+
+Current firmware-specific gaps:
+
+- richer RTOS scenarios beyond the current demo, such as mutex contention and ISR-to-task signaling, still benefit from more validation
+
+Recent RTT validation result on the STM32L496 board:
+
+- `read_rtt_log()` found the RTT control block at `0x20012b38`
+- channel `0` was readable with `buffer_size = 1024`
+- captured text included:
+  `mcudbg RTT ready`
+  `board=ATK_PICTURE target=STM32L496VETx`
+  `mcudbg RTT waiting: open 0:/PICTURE`
+
+Recent FreeRTOS validation result on the same board:
+
+- switched the demo firmware to a minimal FreeRTOS image with `RTTTask` and `LEDTask`
+- `list_rtos_tasks()` found 3 tasks:
+  `RTTTask`, `LEDTask`, `IDLE`
+- `rtos_task_context('LEDTask')` resolved blocked context at `vTaskDelay`
+- `rtos_task_context('RTTTask')` resolved blocked context at `vTaskDelay`
+- `rtos_task_context('IDLE')` returned live running registers at `prvCheckTasksWaitingTermination`
+
+Recent richer FreeRTOS validation result on the same board:
+
+- expanded the demo firmware to 5 application tasks plus `IDLE`
+- `read_rtt_log()` captured queue and semaphore activity:
+  `ProducerTask sent value=...`
+  `ConsumerTask received value=...`
+  `WorkerTask took semaphore`
+- `list_rtos_tasks()` found 6 tasks:
+  `RTTTask`, `ProducerTask`, `ConsumerTask`, `WorkerTask`, `LEDTask`, `IDLE`
+- `rtos_task_context('ConsumerTask')` resolved to `xQueueGenericReceive`
+- `rtos_task_context('WorkerTask')` resolved to `vTaskDelay`
+- `ConsumerTask` appearing in the suspended list is expected for an indefinite wait with `portMAX_DELAY` on this FreeRTOS configuration
+
+Recent timer-service validation result on the same board:
+
+- enabled FreeRTOS software timers and added a periodic `DemoTimer`
+- RTT now captures timer callbacks:
+  `TimerCallback fired count=...`
+- `list_rtos_tasks()` found 7 tasks including `Tmr Svc`
+- `rtos_task_context('Tmr Svc')` resolved blocked context at `prvProcessTimerOrBlockTask`
+- source resolution reached `..\FreeRTOS\timers.c:489`
 
 ## Installation
 
@@ -82,19 +168,16 @@ cd mcudbg
 pip install -e .
 ```
 
-**Requirements:**
+Requirements:
+
 - Python 3.10+
-- A `pyOCD`-supported debug probe (ST-Link, CMSIS-DAP, J-Link via CMSIS-DAP mode)
-- CMSIS-SVD file for your target chip (for peripheral register inspection)
+- a `pyOCD`-supported debug probe
+- an ELF or AXF with debug symbols for symbol-aware features
+- a CMSIS-SVD file for peripheral register inspection
 
-SVD files for STM32 are included in Keil MDK (`<pack>/CMSIS/SVD/`) or available at
-[cmsis-svd-data](https://github.com/posborne/cmsis-svd-data).
+## MCP configuration
 
----
-
-## MCP Configuration
-
-### Claude Desktop (Windows)
+### Claude Desktop on Windows
 
 ```json
 {
@@ -108,7 +191,7 @@ SVD files for STM32 are included in Keil MDK (`<pack>/CMSIS/SVD/`) or available 
 }
 ```
 
-### Claude Desktop (macOS / Linux)
+### Claude Desktop on macOS or Linux
 
 ```json
 {
@@ -122,165 +205,183 @@ SVD files for STM32 are included in Keil MDK (`<pack>/CMSIS/SVD/`) or available 
 }
 ```
 
----
+## Quick start
 
-## Getting Started
+### 1. Discover and connect the probe
 
-### 1. Load a demo profile (optional)
-
-```
-list_demo_profiles()
-load_demo_profile("stm32l4_atk_led_demo")
+```python
+list_connected_probes()
+probe_connect(target="stm32l496vetx", unique_id="YOUR_PROBE_ID")
 ```
 
-### 2. Configure manually
+### 2. Load symbols and optional SVD
 
-```
-configure_probe(target="stm32l496vetx")
-configure_log(uart_port="COM5", uart_baudrate=115200)
-configure_elf(elf_path="/path/to/firmware.axf")
-connect_with_config()
+```python
+elf_load("D:/path/to/firmware.axf")
+svd_load("D:/path/to/STM32L4x6.svd")
 ```
 
-### 3. Diagnose a startup failure
+### 3. Inspect where the CPU is stopped
 
-```
-log_tail(30)
-diagnose_startup_failure()
-```
-
-### 4. Inspect a peripheral
-
-```
-svd_load('/path/to/STM32L4x6.svd')
-svd_read_peripheral('USART2')
-svd_read_peripheral('GPIOA')
-```
-
-### 5. Full hardfault investigation
-
-```
-connect_with_config()
+```python
 probe_halt()
-diagnose_hardfault()
-svd_read_peripheral('USART1')
+read_stopped_context()
+elf_addr_to_source(0x08001234)
 ```
 
----
+### 4. Step at source level
 
-## MCP Tools Reference
+```python
+run_to_function("main")
+source_step()
+step_over()
+step_out()
+```
+
+### 5. Inspect peripherals and memory
+
+```python
+svd_read_peripheral("USART2")
+svd_write_field("RCC", "CR", "PLLON", 1)
+dump_memory(0x20000000, 64)
+read_symbol_value("SystemCoreClock", 4)
+```
+
+### 6. Diagnose failures
+
+```python
+diagnose_startup_failure()
+diagnose_hardfault()
+diagnose_peripheral_stuck("USART2", "no output from TX pin")
+diagnose_memory_corruption()
+```
+
+## Tool groups
 
 ### Configuration
-| Tool | Description |
-|------|-------------|
-| `configure_probe` | Set probe target and unique ID |
-| `configure_log` | Set UART port and baudrate |
-| `configure_elf` | Set ELF/AXF file path |
-| `configure_build` | Set Keil UV4 build parameters |
-| `connect_with_config` | Connect all configured resources at once |
-| `get_runtime_config` | Show current configuration |
 
-### Probe Control
-| Tool | Description |
-|------|-------------|
-| `list_connected_probes` | List all connected debug probes |
-| `probe_connect` | Connect to target |
-| `probe_disconnect` | Disconnect probe |
-| `probe_halt` | Halt target |
-| `probe_resume` | Resume target |
-| `probe_reset` | Reset target |
-| `probe_step` | Execute one instruction |
-| `probe_read_registers` | Read all CPU registers |
-| `probe_write_memory` | Write bytes to target memory |
-| `continue_target` | Resume and wait for halt (with timeout) |
-| `read_stopped_context` | Read registers + fault state when halted |
-| `set_breakpoint` | Set breakpoint by symbol or address |
-| `clear_breakpoint` | Clear a breakpoint |
-| `clear_all_breakpoints` | Clear all breakpoints |
+- `get_runtime_config`
+- `list_demo_profiles`
+- `load_demo_profile`
+- `configure_probe`
+- `configure_log`
+- `configure_elf`
+- `configure_build`
+- `connect_with_config`
 
-### Logs
-| Tool | Description |
-|------|-------------|
-| `log_connect` | Connect to UART log channel |
-| `log_disconnect` | Disconnect log |
-| `log_tail` | Read recent log lines |
+### Probe control and stepping
 
-### ELF Symbols
-| Tool | Description |
-|------|-------------|
-| `elf_load` | Load ELF/AXF for symbol resolution |
+- `list_connected_probes`
+- `probe_connect`
+- `probe_disconnect`
+- `probe_halt`
+- `probe_resume`
+- `probe_reset`
+- `probe_step`
+- `continue_target`
+- `probe_continue_until`
+- `step_over`
+- `step_out`
+- `source_step`
+- `run_to_source`
+- `run_to_function`
 
-### SVD Peripheral Registers
-| Tool | Description |
-|------|-------------|
-| `svd_load` | Load a CMSIS-SVD file |
-| `svd_list_peripherals` | List all peripherals in the SVD |
-| `svd_get_registers` | Get register layout (no hardware read) |
-| `svd_read_peripheral` | Read register values + field decode + diagnosis |
+### Breakpoints and watchpoints
 
-### Diagnosis
-| Tool | Description |
-|------|-------------|
-| `diagnose_hardfault` | Full Cortex-M hardfault analysis |
-| `diagnose_startup_failure` | Startup stage analysis |
-| `run_debug_loop` | AI-driven multi-step debug loop |
+- `set_breakpoint`
+- `set_breakpoints_for_function_range`
+- `clear_breakpoint`
+- `clear_all_breakpoints`
+- `probe_set_watchpoint`
+- `probe_remove_watchpoint`
+- `probe_clear_all_watchpoints`
 
-### Build & Flash (Keil UV4)
-| Tool | Description |
-|------|-------------|
-| `build_project` | Build firmware via Keil UV4 |
-| `flash_firmware` | Flash firmware via Keil UV4 |
+### Registers, memory, and state
 
-### Lifecycle
-| Tool | Description |
-|------|-------------|
-| `disconnect_all` | Cleanly disconnect all resources |
+- `probe_read_registers`
+- `probe_read_fpu_registers`
+- `probe_read_mpu_regions`
+- `probe_read_memory`
+- `probe_write_memory`
+- `dump_memory`
+- `memory_find`
+- `memory_snapshot`
+- `memory_diff`
+- `read_memory_map`
+- `read_stopped_context`
 
----
+### ELF and DWARF
 
-## Validated Hardware
+- `elf_load`
+- `elf_addr_to_source`
+- `elf_list_functions`
+- `elf_symbol_info`
+- `read_symbol_value`
+- `write_symbol_value`
+- `watch_symbol`
+- `disassemble`
+- `backtrace`
+- `dwarf_backtrace`
+- `get_locals`
+- `set_local`
+- `log_trace`
+- `reset_and_trace`
+- `compare_elf_to_flash`
 
-| Component | Details |
-|-----------|---------|
-| Target | STM32L496VETx |
-| Probe | ST-Link (via pyOCD) |
-| Log | UART 115200 baud |
-| SVD | STM32L4x6.svd (Keil STM32L4xx_DFP pack) |
+### Logs, RTOS, and RTT
 
-Other `pyOCD`-supported targets (STM32F4, RP2040, nRF52, etc.) should work but are untested.
+- `log_connect`
+- `log_disconnect`
+- `log_tail`
+- `list_rtos_tasks`
+- `rtos_task_context`
+- `read_rtt_log`
+- `read_stack_usage`
 
----
+### SVD and peripheral diagnosis
 
-## Known Limitations
+- `svd_load`
+- `svd_list_peripherals`
+- `svd_get_registers`
+- `svd_read_peripheral`
+- `svd_write_register`
+- `svd_write_field`
+- `diagnose_peripheral_stuck`
 
-- **Probe backend**: only `pyOCD` is supported. JLink and OpenOCD backends are planned.
-- **Build and flash**: `build_project` / `flash_firmware` require **Keil UV4** on Windows. Other toolchains (CMake/GCC/IAR) are planned.
-- **Log channel**: only UART is supported. RTT support is planned.
-- **SVD**: user must provide the SVD file for their chip. Files are not bundled.
+### Higher-level diagnosis
 
----
+- `diagnose_hardfault`
+- `diagnose_startup_failure`
+- `diagnose_memory_corruption`
+- `diagnose_stack_overflow`
+- `diagnose_interrupt_issue`
+- `diagnose_clock_issue`
+- `run_debug_loop`
 
-## Roadmap
+### Build, flash, lifecycle
 
-| Phase | Status | Description |
-|-------|--------|-------------|
-| 1 | ✅ Done | Probe + UART log + ELF + hardfault/startup diagnosis |
-| 2 | ✅ Done | SVD peripheral register inspection and auto-diagnosis |
-| 3 | Planned | Symptom-driven general diagnosis (peripheral stuck, interrupt issues, memory corruption) |
-| 4 | Planned | Full closed loop — diagnose → edit code → build → flash → verify |
-| 5 | Planned | DWARF deep debug — local variables, call stack |
-| 6 | Planned | Board-level observation — GPIO, voltage, waveforms |
+- `build_project`
+- `flash_firmware`
+- `disconnect_all`
 
----
+## Known limitations
+
+- probe backend is currently `pyOCD` only
+- build and flash integration currently targets Keil UV4 on Windows
+- RTT and RTOS tooling need matching firmware support to validate end to end
+- some advanced DWARF features depend on debug info quality and compiler settings
+- SVD files are not bundled; you provide the file for your target
+
+## Development status
+
+- local automated test snapshot: `58 passed`
+- current work is beyond the original Phase 2 scope and well into Phase 3 debugging features
+- the next big product step is a symptom-driven umbrella entry point such as `diagnose(symptom)`
 
 ## Contributing
 
-Issues and PRs are welcome.
-
-If you test on a target other than STM32L4, please open an issue with your results — expanding validated hardware coverage is a priority.
-
----
+Issues and PRs are welcome. Hardware validation reports are especially useful if you test on targets beyond STM32L4.
 
 ## License
 
-MIT — see [LICENSE](LICENSE)
+MIT. See [LICENSE](LICENSE).
