@@ -548,6 +548,75 @@ def source_step(session: SessionState, max_instructions: int = 100) -> dict:
     }
 
 
+_DWARF_REG_TO_CORE: dict[int, str] = {i: f"r{i}" for i in range(13)}
+_DWARF_REG_TO_CORE[13] = "sp"
+_DWARF_REG_TO_CORE[14] = "lr"
+_DWARF_REG_TO_CORE[15] = "pc"
+
+
+def dwarf_backtrace(session: SessionState, max_frames: int = 16) -> dict:
+    if not session.elf.is_loaded:
+        return {"status": "error", "summary": "ELF not loaded. Load an ELF file first."}
+
+    core = session.probe.read_core_registers()
+
+    def read32(addr: int) -> int:
+        return int.from_bytes(session.probe.read_memory(addr, 4), "little")
+
+    def make_frame(idx: int, pc: int) -> dict:
+        resolved = session.elf.resolve_address(pc)
+        return {
+            "frame": idx,
+            "address": hex(pc),
+            "symbol": resolved["symbol"],
+            "source": resolved["source"],
+        }
+
+    frames: list[dict] = []
+    cur_pc = core["pc"] & ~1
+    cur_regs: dict = dict(core)
+
+    for i in range(max_frames):
+        frames.append(make_frame(i, cur_pc))
+        cfi = session.elf.get_cfi_at(cur_pc)
+
+        if cfi is None:
+            # No CFI — leaf function or missing .debug_frame; use LR as return address
+            lr_val = cur_regs.get("lr", 0) & ~1
+            if lr_val >= 0x100 and lr_val != cur_pc and i + 1 < max_frames:
+                frames.append(make_frame(i + 1, lr_val))
+            break
+
+        # Compute Canonical Frame Address
+        cfa_reg_name = _DWARF_REG_TO_CORE.get(cfi["cfa_reg"], "sp")
+        cfa = cur_regs.get(cfa_reg_name, 0) + cfi["cfa_offset"]
+
+        # Recover return address
+        ra_offset = cfi["ra_offset"]
+        if ra_offset is None:
+            # LR not saved — still in register (leaf-like epilogue)
+            ret_addr = cur_regs.get("lr", 0) & ~1
+        else:
+            try:
+                ret_addr = read32(cfa + ra_offset) & ~1
+            except Exception:
+                break
+
+        if ret_addr < 0x100 or ret_addr == cur_pc:
+            break
+
+        cur_pc = ret_addr
+        cur_regs = dict(cur_regs)
+        cur_regs["sp"] = cfa
+
+    return {
+        "status": "ok",
+        "summary": f"Found {len(frames)} frame(s) via DWARF .debug_frame.",
+        "frame_count": len(frames),
+        "frames": frames,
+    }
+
+
 def backtrace(
     session: SessionState,
     max_frames: int = 20,

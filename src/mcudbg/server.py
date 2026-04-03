@@ -52,6 +52,7 @@ from .tools.probe import addr_to_source as _addr_to_source
 from .tools.probe import set_breakpoint as _set_breakpoint
 from .tools.probe import source_step as _source_step
 from .tools.probe import backtrace as _backtrace
+from .tools.probe import dwarf_backtrace as _dwarf_backtrace
 from .tools.probe import get_locals as _get_locals
 from .tools.probe import set_local as _set_local
 from .tools.probe import run_to_source as _run_to_source
@@ -300,6 +301,19 @@ async def run_to_source(file: str, line: int, timeout_seconds: float = 10.0) -> 
     Example: run_to_source('main.c', 42)
     """
     return _run_to_source(session, file=file, line=line, timeout_seconds=timeout_seconds)
+
+
+@mcp.tool()
+async def dwarf_backtrace(max_frames: int = 16) -> dict:
+    """Accurate call stack using DWARF .debug_frame CFI rules.
+
+    For each frame, computes the Canonical Frame Address (CFA) from the CFI
+    table and reads the saved return address from the stack. Falls back to LR
+    for leaf functions or frames without CFI entries.
+    More accurate than the heuristic backtrace(); requires ELF with .debug_frame.
+    Requires probe connected and target halted.
+    """
+    return _dwarf_backtrace(session, max_frames=max_frames)
 
 
 @mcp.tool()

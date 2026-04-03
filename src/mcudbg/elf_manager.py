@@ -50,7 +50,9 @@ class ElfManager:
         self._all_symbols: list[dict[str, Any]] = []
         self._line_addrs: list[int] = []
         self._line_entries: list[tuple[str, int]] = []
-        self._func_locals: list[dict[str, Any]] = []   # Phase 5
+        self._func_locals: list[dict[str, Any]] = []
+        self._cfi_entries: list[dict[str, Any]] = []
+        self._cfi_pcs: list[int] = []
 
     def load(self, path: str) -> dict[str, Any]:
         file_path = Path(path)
@@ -59,6 +61,7 @@ class ElfManager:
             self._func_symbols, self._all_symbols = self._load_symbols(elf)
             self._line_addrs, self._line_entries = self._build_line_table(elf)
             self._func_locals = self._build_func_locals(elf)
+            self._cfi_entries, self._cfi_pcs = self._build_cfi_index(elf)
         self._path = file_path
         return {
             "status": "ok",
@@ -66,6 +69,7 @@ class ElfManager:
             "symbol_count": len(self._func_symbols),
             "line_entry_count": len(self._line_addrs),
             "func_with_locals": len(self._func_locals),
+            "cfi_entries": len(self._cfi_entries),
         }
 
     def addr_to_source(self, address: int) -> dict[str, Any]:
@@ -373,3 +377,86 @@ class ElfManager:
             return {"name": f"{inner['name']}[]", "byte_size": size()}
 
         return {"name": tag.replace("DW_TAG_", ""), "byte_size": size()}
+
+    # ------------------------------------------------------------------ #
+    # .debug_frame — Phase 5
+    # ------------------------------------------------------------------ #
+
+    # ARM DWARF register index → core register name
+    _DWARF_TO_CORE: dict[int, str] = {i: f"r{i}" for i in range(13)}
+    _DWARF_TO_CORE[13] = "sp"
+    _DWARF_TO_CORE[14] = "lr"
+    _DWARF_TO_CORE[15] = "pc"
+
+    def _build_cfi_index(
+        self, elf: ELFFile
+    ) -> tuple[list[dict[str, Any]], list[int]]:
+        """Parse .debug_frame and build a PC-sorted list of FDE records."""
+        if not elf.has_dwarf_info():
+            return [], []
+        dwarf = elf.get_dwarf_info()
+        try:
+            has_cfi = dwarf.has_CFI()
+        except Exception:
+            return [], []
+        if not has_cfi:
+            return [], []
+
+        try:
+            from elftools.dwarf.callframe import FDE as _FDE
+        except ImportError:
+            return [], []
+
+        entries: list[dict[str, Any]] = []
+        for cfi_entry in dwarf.CFI_entries():
+            if not isinstance(cfi_entry, _FDE):
+                continue
+            try:
+                pc_start = int(cfi_entry.header["initial_location"]) & ~1
+                pc_end = pc_start + int(cfi_entry.header["address_range"])
+                decoded = cfi_entry.get_decoded()
+                row_pcs: list[int] = []
+                rows: list[dict[str, Any]] = []
+                for row in decoded.table:
+                    rpc = int(row["pc"]) & ~1
+                    cfa = row.get("cfa")
+                    if cfa is None:
+                        continue
+                    cfa_reg = int(cfa.reg)
+                    cfa_off = int(cfa.offset)
+                    # Return address = DWARF column 14 (LR) on ARM
+                    ra_rule = row.get(14)
+                    ra_offset: int | None = None
+                    if ra_rule is not None:
+                        try:
+                            if ra_rule.type.name == "OFFSET":
+                                ra_offset = int(ra_rule.arg)
+                        except Exception:
+                            pass
+                    row_pcs.append(rpc)
+                    rows.append({"cfa_reg": cfa_reg, "cfa_offset": cfa_off, "ra_offset": ra_offset})
+                if rows:
+                    entries.append({"pc_start": pc_start, "pc_end": pc_end,
+                                    "row_pcs": row_pcs, "rows": rows})
+            except Exception:
+                continue
+
+        entries.sort(key=lambda e: e["pc_start"])
+        pcs = [e["pc_start"] for e in entries]
+        return entries, pcs
+
+    def get_cfi_at(self, pc: int) -> dict[str, Any] | None:
+        """Return the applicable CFI row for pc, or None if not found."""
+        addr = pc & ~1
+        # Binary search for FDE containing addr
+        idx = bisect.bisect_right(self._cfi_pcs, addr) - 1
+        if idx < 0:
+            return None
+        entry = self._cfi_entries[idx]
+        if addr >= entry["pc_end"]:
+            return None
+        # Find applicable row within FDE
+        row_idx = bisect.bisect_right(entry["row_pcs"], addr) - 1
+        if row_idx < 0:
+            return None
+        return entry["rows"][row_idx]
