@@ -51,6 +51,8 @@ from .tools.probe import continue_until as _continue_until
 from .tools.probe import addr_to_source as _addr_to_source
 from .tools.probe import set_breakpoint as _set_breakpoint
 from .tools.probe import source_step as _source_step
+from .tools.probe import disassemble as _disassemble
+from .tools.probe import step_over as _step_over
 from .tools.probe import step_instruction as _step_instruction
 from .tools.probe import write_memory as _write_memory
 from .tools.probe import write_symbol_value as _write_symbol_value
@@ -243,6 +245,30 @@ async def source_step() -> dict:
     Requires ELF loaded with DWARF info and probe connected and target halted.
     """
     return _source_step(session)
+
+
+@mcp.tool()
+async def disassemble(address: int, count: int = 10) -> dict:
+    """Disassemble Thumb/Thumb-2 instructions at the given address.
+
+    Reads count*4 bytes from target memory and disassembles using capstone.
+    Annotates each instruction with source file:line if DWARF is loaded.
+    Requires probe connected and target halted.
+    Example: disassemble(0x08001234, 10)
+    """
+    return _disassemble(session, address=address, count=count)
+
+
+@mcp.tool()
+async def step_over() -> dict:
+    """Execute one source line, stepping OVER function calls (bl/blx).
+
+    Disassembles the current instruction. If it is a BL/BLX call, sets a
+    breakpoint at the return address and resumes, skipping the callee body.
+    Otherwise falls through to source_step (step into).
+    Requires probe connected and target halted.
+    """
+    return _step_over(session)
 
 
 @mcp.tool()

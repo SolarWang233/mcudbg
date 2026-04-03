@@ -548,6 +548,77 @@ def source_step(session: SessionState, max_instructions: int = 100) -> dict:
     }
 
 
+def disassemble(session: SessionState, address: int, count: int = 10) -> dict:
+    try:
+        from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB, CS_MODE_MCLASS
+    except ImportError:
+        return {"status": "error", "summary": "capstone is not installed."}
+    size = count * 4
+    try:
+        data = session.probe.read_memory(address & ~1, size)
+    except Exception as e:
+        return {"status": "error", "summary": str(e)}
+    md = Cs(CS_ARCH_ARM, CS_MODE_THUMB + CS_MODE_MCLASS)
+    instructions = []
+    for insn in md.disasm(data, address & ~1):
+        entry: dict = {
+            "address": hex(insn.address),
+            "bytes": insn.bytes.hex(),
+            "mnemonic": insn.mnemonic,
+            "op_str": insn.op_str,
+            "text": f"{insn.mnemonic} {insn.op_str}".strip(),
+        }
+        if session.elf.is_loaded:
+            src = session.elf.addr_to_source(insn.address)
+            entry["source"] = f"{src['file']}:{src['line']}" if src["file"] else None
+        instructions.append(entry)
+        if len(instructions) >= count:
+            break
+    return {
+        "status": "ok",
+        "summary": f"Disassembled {len(instructions)} instruction(s) at {hex(address)}.",
+        "address": hex(address),
+        "instructions": instructions,
+    }
+
+
+def step_over(session: SessionState, max_source_instructions: int = 100) -> dict:
+    try:
+        from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB, CS_MODE_MCLASS
+    except ImportError:
+        return source_step(session, max_instructions=max_source_instructions)
+    core = session.probe.read_core_registers()
+    pc = core["pc"] & ~1
+    try:
+        data = session.probe.read_memory(pc, 4)
+    except Exception as e:
+        return {"status": "error", "summary": str(e)}
+    md = Cs(CS_ARCH_ARM, CS_MODE_THUMB + CS_MODE_MCLASS)
+    insns = list(md.disasm(data, pc))
+    if not insns:
+        return step_instruction(session)
+    insn = insns[0]
+    if insn.mnemonic.lower() in ("bl", "blx"):
+        return_addr = insn.address + insn.size
+        session.probe.set_breakpoint(return_addr)
+        try:
+            result = session.probe.continue_target(timeout_seconds=5.0, poll_interval_seconds=0.05)
+        finally:
+            session.probe.clear_breakpoint(return_addr)
+        new_pc = int(result.get("pc", hex(return_addr)), 16)
+        src = session.elf.addr_to_source(new_pc) if session.elf.is_loaded else {"file": None, "line": None}
+        sym = session.elf.resolve_address(new_pc)["symbol"] if session.elf.is_loaded else None
+        return {
+            "status": "ok",
+            "summary": f"Stepped over '{insn.mnemonic} {insn.op_str}'.",
+            "pc": hex(new_pc),
+            "stepped_over": f"{insn.mnemonic} {insn.op_str}".strip(),
+            "source": f"{src['file']}:{src['line']}" if src["file"] else None,
+            "symbol": sym,
+        }
+    return source_step(session, max_instructions=max_source_instructions)
+
+
 def _resolve_breakpoint_address(
     session: SessionState,
     symbol: str | None = None,
