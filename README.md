@@ -27,6 +27,8 @@ Most AI coding tools stop at generating firmware. Real embedded failures happen 
 - set and clear breakpoints by symbol or address
 - set hardware watchpoints
 - continue until an address or condition is hit
+- erase, program, and verify flash ranges from MCP
+- start, stop, and inspect a `pyOCD` GDB server process
 
 ### ELF and DWARF
 
@@ -59,6 +61,7 @@ Most AI coding tools stop at generating firmware. Real embedded failures happen 
 
 ### Diagnosis tools
 
+- `diagnose`
 - `diagnose_hardfault`
 - `diagnose_startup_failure`
 - `diagnose_memory_corruption`
@@ -106,9 +109,29 @@ Confirmed on hardware:
 - `probe_remove_watchpoint`
 - `probe_clear_all_watchpoints`
 - `probe_read_fpu_registers`
+- `erase_flash`
+- `program_flash`
+- `verify_flash`
+- `start_gdb_server`
+- `get_gdb_server_status`
+- `stop_gdb_server`
 - `read_rtt_log`
 - `list_rtos_tasks`
 - `rtos_task_context`
+- `diagnose(symptom)`
+
+Recent flash validation result on the STM32L496 board:
+
+- `verify_flash()` matched the current image header at `0x08000000`
+- a reversible scratch-sector test at `0x08010000` succeeded:
+  `erase_flash()` returned all `0xFF`
+  `program_flash()` wrote a 64-byte test pattern
+  `verify_flash()` matched the programmed bytes
+  a second `program_flash()` restored 64 bytes of `0x00`
+- after the flash test, the board still booted and RTT continued to print:
+  `FreeRTOS demo boot`
+  `Starting scheduler`
+  `RTTTask alive count=...`
 
 Current firmware-specific gaps:
 
@@ -153,6 +176,23 @@ Recent timer-service validation result on the same board:
 - `list_rtos_tasks()` found 7 tasks including `Tmr Svc`
 - `rtos_task_context('Tmr Svc')` resolved blocked context at `prvProcessTimerOrBlockTask`
 - source resolution reached `..\FreeRTOS\timers.c:489`
+
+Recent diagnosis-router validation result on the same board:
+
+- `diagnose("board does not boot", include_logs=False, auto_halt=True)` routed to `diagnose_startup_failure`
+- the returned symbol context included:
+  `pc_symbol = prvCheckTasksWaitingTermination`
+  `source = ..\FreeRTOS\tasks.c:3031`
+
+Recent GDB server validation result on the same board:
+
+- `start_gdb_server()` successfully launched `pyOCD gdbserver`
+- `get_gdb_server_status()` reported:
+  `host = 127.0.0.1`
+  `port = 3333`
+  `state = running`
+  `target = stm32l496vetx`
+- `stop_gdb_server()` shut the background process down cleanly
 
 ## Installation
 
@@ -250,10 +290,27 @@ read_symbol_value("SystemCoreClock", 4)
 ### 6. Diagnose failures
 
 ```python
+diagnose("board does not boot")
 diagnose_startup_failure()
 diagnose_hardfault()
 diagnose_peripheral_stuck("USART2", "no output from TX pin")
 diagnose_memory_corruption()
+```
+
+### 7. Erase, program, and verify flash
+
+```python
+erase_flash(start_address=0x08010000, end_address=0x08010800)
+program_flash(0x08010000, [0xAA, 0x55, 0x12, 0x34], verify=True)
+verify_flash(0x08010000, [0xAA, 0x55, 0x12, 0x34])
+```
+
+### 8. Start a GDB server
+
+```python
+start_gdb_server()
+get_gdb_server_status()
+stop_gdb_server()
 ```
 
 ## Tool groups
@@ -268,6 +325,12 @@ diagnose_memory_corruption()
 - `configure_elf`
 - `configure_build`
 - `connect_with_config`
+
+### GDB server
+
+- `start_gdb_server`
+- `stop_gdb_server`
+- `get_gdb_server_status`
 
 ### Probe control and stepping
 
@@ -309,6 +372,9 @@ diagnose_memory_corruption()
 - `memory_diff`
 - `read_memory_map`
 - `read_stopped_context`
+- `erase_flash`
+- `program_flash`
+- `verify_flash`
 
 ### ELF and DWARF
 
@@ -350,6 +416,7 @@ diagnose_memory_corruption()
 
 ### Higher-level diagnosis
 
+- `diagnose`
 - `diagnose_hardfault`
 - `diagnose_startup_failure`
 - `diagnose_memory_corruption`
@@ -374,9 +441,10 @@ diagnose_memory_corruption()
 
 ## Development status
 
-- local automated test snapshot: `58 passed`
+- local automated test snapshot: `73 passed`
 - current work is beyond the original Phase 2 scope and well into Phase 3 debugging features
-- the next big product step is a symptom-driven umbrella entry point such as `diagnose(symptom)`
+- recent additions include `diagnose(symptom)`, hardware-validated flash erase/program/verify, and a hardware-validated `GDB server` lifecycle entry point
+- the next big product step is a second probe backend such as J-Link
 
 ## Contributing
 

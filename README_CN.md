@@ -28,6 +28,8 @@
 - 按符号或地址设置断点
 - 设置硬件 watchpoint
 - 运行到指定地址或条件命中
+- 通过 MCP 直接做 flash 擦除、编程和校验
+- 启动、停止并查看 `pyOCD` GDB server 状态
 
 ### ELF 与 DWARF
 
@@ -61,6 +63,7 @@
 
 ### 诊断能力
 
+- `diagnose`
 - `diagnose_hardfault`
 - `diagnose_startup_failure`
 - `diagnose_memory_corruption`
@@ -81,6 +84,7 @@
 
 - Keil UV4 编译集成
 - Keil UV4 烧录集成
+- `erase_flash / program_flash / verify_flash`
 - 可在 MCP 中串起调试闭环
 
 ## 真实硬件验证状态
@@ -109,14 +113,67 @@
 - `probe_remove_watchpoint`
 - `probe_clear_all_watchpoints`
 - `probe_read_fpu_registers`
-
-当前依赖固件条件、暂未在这份固件上命中的能力：
-
+- `erase_flash`
+- `program_flash`
+- `verify_flash`
+- `start_gdb_server`
+- `get_gdb_server_status`
+- `stop_gdb_server`
 - `read_rtt_log`
-  需要固件实际启用 RTT
 - `list_rtos_tasks`
 - `rtos_task_context`
-  需要带 FreeRTOS 符号的固件
+- `diagnose(symptom)`
+
+最近的 flash 真机验证结果：
+
+- `verify_flash()` 已对当前镜像头部做真机校验，`0x08000000` 处匹配成功
+- 在 `0x08010000` scratch sector 上做了可恢复测试：
+  `erase_flash()` 成功，读回为 `0xFF`
+  `program_flash()` 写入 64 字节测试 pattern 成功
+  `verify_flash()` 对 pattern 校验成功
+  随后再写回 64 字节 `0x00` 并校验成功
+- 这轮 flash 测试后板子仍正常启动，RTT 继续输出：
+  `FreeRTOS demo boot`
+  `Starting scheduler`
+  `RTTTask alive count=...`
+
+最近的 RTT 真机验证结果：
+
+- `read_rtt_log()` 找到 RTT 控制块地址 `0x20012b38`
+- `channel 0` 可读，`buffer_size = 1024`
+- 实际读到：
+  `mcudbg RTT ready`
+  `board=ATK_PICTURE target=STM32L496VETx`
+  `mcudbg RTT waiting: open 0:/PICTURE`
+
+最近的 FreeRTOS 真机验证结果：
+
+- `list_rtos_tasks()` 已看到：
+  `RTTTask`、`ProducerTask`、`ConsumerTask`、`WorkerTask`、`LEDTask`、`IDLE`、`Tmr Svc`
+- `rtos_task_context('ConsumerTask')` 成功解析到 `xQueueGenericReceive`
+- `rtos_task_context('Tmr Svc')` 成功解析到 `prvProcessTimerOrBlockTask`
+- `read_rtt_log()` 能稳定读到：
+  `ProducerTask sent value=...`
+  `ConsumerTask received value=...`
+  `WorkerTask took semaphore`
+  `TimerCallback fired count=...`
+
+最近的统一诊断入口真机结果：
+
+- `diagnose("board does not boot", include_logs=False, auto_halt=True)` 成功路由到 `diagnose_startup_failure`
+- 返回中包含：
+  `pc_symbol = prvCheckTasksWaitingTermination`
+  `source = ..\FreeRTOS\tasks.c:3031`
+
+最近的 GDB server 真机结果：
+
+- `start_gdb_server()` 成功拉起 `pyOCD gdbserver`
+- `get_gdb_server_status()` 返回：
+  `host = 127.0.0.1`
+  `port = 3333`
+  `state = running`
+  `target = stm32l496vetx`
+- `stop_gdb_server()` 成功关闭后台进程
 
 ## 安装
 
@@ -214,10 +271,27 @@ read_symbol_value("SystemCoreClock", 4)
 ### 6. 做故障诊断
 
 ```python
+diagnose("board does not boot")
 diagnose_startup_failure()
 diagnose_hardfault()
 diagnose_peripheral_stuck("USART2", "no output from TX pin")
 diagnose_memory_corruption()
+```
+
+### 7. 擦除、编程并校验 flash
+
+```python
+erase_flash(start_address=0x08010000, end_address=0x08010800)
+program_flash(0x08010000, [0xAA, 0x55, 0x12, 0x34], verify=True)
+verify_flash(0x08010000, [0xAA, 0x55, 0x12, 0x34])
+```
+
+### 8. 启动 GDB server
+
+```python
+start_gdb_server()
+get_gdb_server_status()
+stop_gdb_server()
 ```
 
 ## 工具分组
@@ -232,6 +306,12 @@ diagnose_memory_corruption()
 - `configure_elf`
 - `configure_build`
 - `connect_with_config`
+
+### GDB server
+
+- `start_gdb_server`
+- `stop_gdb_server`
+- `get_gdb_server_status`
 
 ### Probe 控制与步进
 
@@ -273,6 +353,9 @@ diagnose_memory_corruption()
 - `memory_diff`
 - `read_memory_map`
 - `read_stopped_context`
+- `erase_flash`
+- `program_flash`
+- `verify_flash`
 
 ### ELF 与 DWARF
 
@@ -314,6 +397,7 @@ diagnose_memory_corruption()
 
 ### 更高层的诊断
 
+- `diagnose`
 - `diagnose_hardfault`
 - `diagnose_startup_failure`
 - `diagnose_memory_corruption`
@@ -338,9 +422,10 @@ diagnose_memory_corruption()
 
 ## 当前开发状态
 
-- 本地自动化测试快照：`58 passed`
+- 本地自动化测试快照：`73 passed`
 - 当前实现已经明显超出最早的 Phase 2 范围，进入 Phase 3 调试能力补全
-- 下一步高价值工作是补一个统一入口，例如 `diagnose(symptom)`
+- 最近新增了 `diagnose(symptom)` 统一入口、已在真机验证过的 flash `erase / program / verify`，以及 `GDB server` 生命周期入口
+- 下一步高价值工作是补第二套 probe backend，例如 J-Link
 
 ## 参与贡献
 
