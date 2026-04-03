@@ -548,6 +548,29 @@ def source_step(session: SessionState, max_instructions: int = 100) -> dict:
     }
 
 
+def step_out(session: SessionState, timeout_seconds: float = 5.0) -> dict:
+    core = session.probe.read_core_registers()
+    lr = core["lr"] & ~1
+    session.probe.set_breakpoint(lr)
+    try:
+        result = session.probe.continue_target(
+            timeout_seconds=timeout_seconds, poll_interval_seconds=0.05
+        )
+    finally:
+        session.probe.clear_breakpoint(lr)
+    new_pc = int(result.get("pc", hex(lr)), 16)
+    src = session.elf.addr_to_source(new_pc) if session.elf.is_loaded else {"file": None, "line": None}
+    sym = session.elf.resolve_address(new_pc)["symbol"] if session.elf.is_loaded else None
+    return {
+        "status": "ok",
+        "summary": f"Stepped out to {hex(new_pc)}.",
+        "pc": hex(new_pc),
+        "return_address": hex(lr),
+        "source": f"{src['file']}:{src['line']}" if src["file"] else None,
+        "symbol": sym,
+    }
+
+
 def disassemble(session: SessionState, address: int, count: int = 10) -> dict:
     try:
         from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB, CS_MODE_MCLASS

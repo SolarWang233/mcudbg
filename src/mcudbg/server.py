@@ -52,6 +52,7 @@ from .tools.probe import addr_to_source as _addr_to_source
 from .tools.probe import set_breakpoint as _set_breakpoint
 from .tools.probe import source_step as _source_step
 from .tools.probe import disassemble as _disassemble
+from .tools.probe import step_out as _step_out
 from .tools.probe import step_over as _step_over
 from .tools.probe import step_instruction as _step_instruction
 from .tools.probe import write_memory as _write_memory
@@ -257,6 +258,16 @@ async def disassemble(address: int, count: int = 10) -> dict:
     Example: disassemble(0x08001234, 10)
     """
     return _disassemble(session, address=address, count=count)
+
+
+@mcp.tool()
+async def step_out(timeout_seconds: float = 5.0) -> dict:
+    """Run until the current function returns (step out).
+
+    Sets a breakpoint at the current LR (return address) and resumes.
+    Requires probe connected and target halted.
+    """
+    return _step_out(session, timeout_seconds=timeout_seconds)
 
 
 @mcp.tool()
