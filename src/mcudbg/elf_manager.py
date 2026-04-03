@@ -128,6 +128,28 @@ class ElfManager:
     def is_loaded(self) -> bool:
         return self._path is not None
 
+    def get_section_data(self) -> list[dict[str, Any]]:
+        """Return loadable PROGBITS sections with their binary content."""
+        if not self.is_loaded:
+            return []
+        sections = []
+        with self._path.open("rb") as handle:
+            elf = ELFFile(handle)
+            for section in elf.iter_sections():
+                if section["sh_type"] != "SHT_PROGBITS":
+                    continue
+                if not (section["sh_flags"] & 0x2):  # SHF_ALLOC
+                    continue
+                if section["sh_addr"] == 0 or section["sh_size"] == 0:
+                    continue
+                sections.append({
+                    "name": section.name,
+                    "vma": section["sh_addr"],
+                    "size": section["sh_size"],
+                    "data": section.data(),
+                })
+        return sections
+
     def get_sections(self) -> list[dict[str, Any]]:
         """Return VMA, LMA, and size for each ELF section."""
         if not self.is_loaded:

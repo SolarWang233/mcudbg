@@ -41,6 +41,9 @@ from .tools.probe import diagnose_memory_corruption as _diagnose_memory_corrupti
 from .tools.probe import memory_find as _memory_find
 from .tools.probe import step_n_instructions as _step_n_instructions
 from .tools.probe import read_memory_map as _read_memory_map
+from .tools.probe import watch_symbol as _watch_symbol
+from .tools.probe import compare_elf_to_flash as _compare_elf_to_flash
+from .tools.probe import log_trace as _log_trace
 from .tools.probe import list_rtos_tasks as _list_rtos_tasks
 from .tools.probe import rtos_task_context as _rtos_task_context
 from .tools.probe import read_rtt_log as _read_rtt_log
@@ -437,6 +440,51 @@ async def read_memory_map() -> dict:
     No probe connection required.
     """
     return _read_memory_map(session)
+
+
+@mcp.tool()
+async def watch_symbol(
+    name: str,
+    size: int = 4,
+    timeout_seconds: float = 10.0,
+    poll_interval_seconds: float = 0.1,
+) -> dict:
+    """Poll a symbol's value until it changes or timeout expires.
+
+    Reads the symbol at each poll interval and returns as soon as the value differs
+    from the initial read. Reports old/new values and elapsed time.
+    Requires ELF loaded and probe connected.
+    Example: watch_symbol('g_state', 4, timeout_seconds=5.0)
+    """
+    return _watch_symbol(
+        session, name=name, size=size,
+        timeout_seconds=timeout_seconds,
+        poll_interval_seconds=poll_interval_seconds,
+    )
+
+
+@mcp.tool()
+async def compare_elf_to_flash() -> dict:
+    """Compare all loadable ELF sections against actual target memory.
+
+    Reads each PROGBITS+ALLOC section from the ELF, reads the same address range
+    from target memory, and reports mismatching bytes. Useful for verifying that
+    flash programming completed correctly.
+    Requires ELF loaded and probe connected.
+    """
+    return _compare_elf_to_flash(session)
+
+
+@mcp.tool()
+async def log_trace(max_steps: int = 200, max_lines: int = 50) -> dict:
+    """Step through code and record each unique source line visited.
+
+    Executes up to max_steps instructions, collecting distinct (file, line) pairs
+    in execution order. Stops early when max_lines unique lines are reached.
+    Useful for tracing execution paths through unfamiliar code.
+    Requires ELF with debug info (.debug_line) and probe connected.
+    """
+    return _log_trace(session, max_steps=max_steps, max_lines=max_lines)
 
 
 @mcp.tool()

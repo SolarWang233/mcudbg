@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import operator as _op
+import time
 
 from ..session import SessionState
 
@@ -272,51 +273,294 @@ def memory_find(
 
 def step_n_instructions(session: SessionState, count: int = 10) -> dict:
     """Execute count instructions, recording PC and symbol at each step."""
-    MAX = 100
-    truncated = count > MAX
-    actual = min(count, MAX)
+    actual = max(0, min(count, 100))
+    truncated = count > 100
     steps: list[dict] = []
     try:
         for i in range(actual):
-            session.probe.step()
-            core = session.probe.read_core_registers()
-            pc = core["pc"] & ~1
+            result = session.probe.step()
+            pc_value = result.get("pc")
+            pc = int(pc_value, 16) if isinstance(pc_value, str) else int(pc_value)
             symbol = None
             if session.elf.is_loaded:
                 symbol = session.elf.resolve_address(pc).get("symbol")
             steps.append({"step": i + 1, "pc": hex(pc), "symbol": symbol})
+        if steps:
+            final_pc = int(steps[-1]["pc"], 16)
+        else:
+            final_pc = session.probe.read_core_registers()["pc"]
     except Exception as e:
-        return {"status": "error", "summary": str(e), "steps_completed": steps}
-    final_pc = steps[-1]["pc"] if steps else None
+        return {"status": "error", "summary": str(e)}
     return {
         "status": "ok",
-        "summary": f"Stepped {len(steps)} instruction(s). Final PC: {final_pc}.",
+        "summary": f"Stepped {actual} instruction(s). Final PC: {hex(final_pc)}.",
         "steps": steps,
-        "final_pc": final_pc,
+        "final_pc": hex(final_pc),
         "truncated": truncated,
     }
 
 
 _CORTEX_M_REGIONS = [
-    {"name": "Code",                   "start": "0x00000000", "end": "0x1fffffff"},
-    {"name": "SRAM",                   "start": "0x20000000", "end": "0x3fffffff"},
-    {"name": "Peripheral",             "start": "0x40000000", "end": "0x5fffffff"},
-    {"name": "External RAM",           "start": "0x60000000", "end": "0x9fffffff"},
-    {"name": "External device",        "start": "0xa0000000", "end": "0xdfffffff"},
-    {"name": "Private Peripheral Bus", "start": "0xe0000000", "end": "0xffffffff"},
+    {
+        "name": "code",
+        "start": hex(0x00000000),
+        "end": hex(0x1FFFFFFF),
+        "size": 0x20000000,
+        "description": "Code region, including flash and aliased vector table space.",
+    },
+    {
+        "name": "sram",
+        "start": hex(0x20000000),
+        "end": hex(0x3FFFFFFF),
+        "size": 0x20000000,
+        "description": "On-chip SRAM region.",
+    },
+    {
+        "name": "peripherals",
+        "start": hex(0x40000000),
+        "end": hex(0x5FFFFFFF),
+        "size": 0x20000000,
+        "description": "Memory-mapped peripheral register region.",
+    },
+    {
+        "name": "external_ram",
+        "start": hex(0x60000000),
+        "end": hex(0x9FFFFFFF),
+        "size": 0x40000000,
+        "description": "External RAM or memory controller window.",
+    },
+    {
+        "name": "external_device",
+        "start": hex(0xA0000000),
+        "end": hex(0xDFFFFFFF),
+        "size": 0x40000000,
+        "description": "External device memory region.",
+    },
+    {
+        "name": "system",
+        "start": hex(0xE0000000),
+        "end": hex(0xFFFFFFFF),
+        "size": 0x20000000,
+        "description": "System control space, debug blocks, NVIC, SysTick, and PPB.",
+    },
 ]
 
 
 def read_memory_map(session: SessionState) -> dict:
     """Return Cortex-M address space regions and ELF section layout (if loaded)."""
-    elf_sections = None
+    elf_sections: list[dict] = []
+    elf_sections_error = None
+    elf_path = getattr(session.elf, "_path", None)
+    if session.elf.is_loaded and elf_path is not None:
+        try:
+            from elftools.elf.elffile import ELFFile
+
+            with elf_path.open("rb") as handle:
+                elf = ELFFile(handle)
+                load_segments = [segment for segment in elf.iter_segments() if segment["p_type"] == "PT_LOAD"]
+                for section in elf.iter_sections():
+                    vma = int(section["sh_addr"])
+                    size = int(section["sh_size"])
+                    flags = int(section["sh_flags"])
+                    if not (flags & 0x2) and vma == 0 and size == 0:
+                        continue
+
+                    lma = None
+                    for segment in load_segments:
+                        seg_vma = int(segment["p_vaddr"])
+                        seg_memsz = int(segment["p_memsz"])
+                        if seg_vma <= vma < seg_vma + max(seg_memsz, 1):
+                            lma = int(segment["p_paddr"]) + (vma - seg_vma)
+                            break
+
+                    elf_sections.append({
+                        "name": section.name,
+                        "vma": hex(vma),
+                        "lma": None if lma is None else hex(lma),
+                        "size": size,
+                        "type": str(section["sh_type"]),
+                        "flags": flags,
+                    })
+        except Exception as e:
+            elf_sections_error = str(e)
+
+    summary = f"Described {len(_CORTEX_M_REGIONS)} Cortex-M memory region(s)."
     if session.elf.is_loaded:
-        elf_sections = session.elf.get_sections()
+        if elf_sections_error is None:
+            summary = f"{summary} Parsed {len(elf_sections)} ELF section(s)."
+        else:
+            summary = f"{summary} ELF section parsing failed: {elf_sections_error}"
     return {
         "status": "ok",
-        "summary": "Cortex-M memory map" + (" with ELF sections." if elf_sections else "."),
-        "cortex_m_regions": _CORTEX_M_REGIONS,
-        "elf_sections": elf_sections,
+        "summary": summary,
+        "regions": _CORTEX_M_REGIONS,
+        "elf_loaded": session.elf.is_loaded,
+        "sections": elf_sections,
+        "elf_sections_error": elf_sections_error,
+    }
+
+
+def watch_symbol(
+    session: SessionState,
+    name: str,
+    size: int = 4,
+    timeout_seconds: float = 10.0,
+    poll_interval_seconds: float = 0.1,
+) -> dict:
+    """Poll a symbol's value until it changes or timeout expires."""
+    if not session.elf.is_loaded:
+        return {"status": "error", "summary": "ELF not loaded."}
+    resolved = session.elf.resolve_symbol(name)
+    if resolved["address"] is None:
+        return {"status": "error", "summary": f"Symbol '{name}' not found in ELF."}
+    addr = int(resolved["address"], 16)
+    try:
+        initial = session.probe.read_memory(addr, size)
+    except Exception as e:
+        return {"status": "error", "summary": str(e)}
+
+    initial_int = int.from_bytes(initial[:min(size, 8)], "little")
+    deadline = time.monotonic() + timeout_seconds
+    polls = 0
+    while time.monotonic() < deadline:
+        time.sleep(poll_interval_seconds)
+        polls += 1
+        try:
+            current = session.probe.read_memory(addr, size)
+        except Exception as e:
+            return {"status": "error", "summary": str(e)}
+        if current != initial:
+            current_int = int.from_bytes(current[:min(size, 8)], "little")
+            elapsed = timeout_seconds - (deadline - time.monotonic())
+            return {
+                "status": "ok",
+                "summary": f"Symbol '{name}' changed from {hex(initial_int)} to {hex(current_int)} after {elapsed:.2f}s.",
+                "symbol": name,
+                "address": hex(addr),
+                "changed": True,
+                "old_value": hex(initial_int),
+                "new_value": hex(current_int),
+                "old_bytes": initial.hex(),
+                "new_bytes": current.hex(),
+                "polls": polls,
+                "elapsed_seconds": round(elapsed, 3),
+            }
+    return {
+        "status": "ok",
+        "summary": f"Symbol '{name}' did not change within {timeout_seconds}s ({polls} polls).",
+        "symbol": name,
+        "address": hex(addr),
+        "changed": False,
+        "value": hex(initial_int),
+        "polls": polls,
+    }
+
+
+def compare_elf_to_flash(session: SessionState) -> dict:
+    """Compare ELF loadable sections against target memory to verify flash contents."""
+    if not session.elf.is_loaded:
+        return {"status": "error", "summary": "ELF not loaded."}
+    sections = session.elf.get_section_data()
+    if not sections:
+        return {"status": "error", "summary": "No loadable PROGBITS sections found in ELF."}
+
+    results = []
+    total_bytes = 0
+    total_mismatches = 0
+    for sec in sections:
+        vma: int = sec["vma"]
+        expected: bytes = sec["data"]
+        size = len(expected)
+        try:
+            actual = session.probe.read_memory(vma, size)
+        except Exception as e:
+            results.append({
+                "section": sec["name"],
+                "address": hex(vma),
+                "size": size,
+                "status": "read_error",
+                "error": str(e),
+            })
+            continue
+        mismatches = [
+            {"offset": i, "address": hex(vma + i), "expected": hex(expected[i]), "actual": hex(actual[i])}
+            for i in range(size) if expected[i] != actual[i]
+        ]
+        total_bytes += size
+        total_mismatches += len(mismatches)
+        results.append({
+            "section": sec["name"],
+            "address": hex(vma),
+            "size": size,
+            "status": "match" if not mismatches else "mismatch",
+            "mismatch_count": len(mismatches),
+            "mismatches": mismatches[:20],  # cap detail to first 20
+        })
+
+    summary = (
+        f"All {total_bytes} bytes match."
+        if total_mismatches == 0
+        else f"{total_mismatches} byte(s) differ across {sum(1 for r in results if r.get('mismatch_count', 0) > 0)} section(s)."
+    )
+    return {
+        "status": "ok",
+        "summary": summary,
+        "total_bytes_checked": total_bytes,
+        "total_mismatches": total_mismatches,
+        "sections": results,
+    }
+
+
+def log_trace(
+    session: SessionState,
+    max_steps: int = 200,
+    max_lines: int = 50,
+) -> dict:
+    """Step through code recording each unique source line visited.
+
+    Executes up to max_steps instructions, collecting distinct (file, line) pairs.
+    Stops early once max_lines unique source lines have been seen.
+    Requires ELF with .debug_line loaded.
+    """
+    if not session.elf.is_loaded:
+        return {"status": "error", "summary": "ELF not loaded."}
+
+    trace: list[dict] = []   # ordered unique source lines
+    seen: set[tuple] = set()
+    steps = 0
+    try:
+        for _ in range(max_steps):
+            core = session.probe.read_core_registers()
+            pc = core["pc"] & ~1
+            src = session.elf.addr_to_source(pc)
+            if src["file"] and src["line"]:
+                key = (src["file"], src["line"])
+                if key not in seen:
+                    seen.add(key)
+                    trace.append({
+                        "file": src["file"],
+                        "line": src["line"],
+                        "pc": hex(pc),
+                        "symbol": session.elf.resolve_address(pc).get("symbol"),
+                    })
+                    if len(trace) >= max_lines:
+                        break
+            session.probe.step()
+            steps += 1
+    except Exception as e:
+        return {
+            "status": "error",
+            "summary": str(e),
+            "steps_completed": steps,
+            "trace": trace,
+        }
+
+    return {
+        "status": "ok",
+        "summary": f"Traced {steps} instructions → {len(trace)} unique source line(s).",
+        "steps": steps,
+        "unique_lines": len(trace),
+        "trace": trace,
     }
 
 
