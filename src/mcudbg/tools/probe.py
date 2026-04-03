@@ -480,13 +480,81 @@ def read_registers(session: SessionState) -> dict:
     }
 
 
+def addr_to_source(session: SessionState, address: int) -> dict:
+    if not session.elf.is_loaded:
+        return {"status": "error", "summary": "ELF not loaded. Load an ELF file first."}
+
+    src = session.elf.addr_to_source(address)
+    sym = session.elf.resolve_address(address)
+    return {
+        "status": "ok",
+        "address": hex(address),
+        "file": src["file"],
+        "line": src["line"],
+        "source": sym["source"],
+        "symbol": sym["symbol"],
+    }
+
+
+def source_step(session: SessionState, max_instructions: int = 100) -> dict:
+    if not session.elf.is_loaded:
+        return step_instruction(session)
+
+    core = session.probe.read_core_registers()
+    pc = core["pc"]
+    initial = session.elf.addr_to_source(pc)
+    if initial["file"] is None or initial["line"] is None:
+        return step_instruction(session)
+
+    cur_file = initial["file"]
+    cur_line = initial["line"]
+    for instruction_count in range(1, max_instructions + 1):
+        result = session.probe.step()
+        new_pc_hex = result.get("pc")
+        if not new_pc_hex:
+            break
+
+        new_pc = int(new_pc_hex, 16)
+        new_src = session.elf.addr_to_source(new_pc)
+        if new_src["file"] is not None and (
+            new_src["file"] != cur_file or new_src["line"] != cur_line
+        ):
+            sym = session.elf.resolve_address(new_pc)
+            source_str = f"{new_src['file']}:{new_src['line']}"
+            return {
+                "status": "ok",
+                "summary": f"Stepped to {source_str}.",
+                "pc": hex(new_pc),
+                "instructions_executed": instruction_count,
+                "source": source_str,
+                "file": new_src["file"],
+                "line": new_src["line"],
+                "symbol": sym["symbol"],
+            }
+
+    core = session.probe.read_core_registers()
+    final_pc = core["pc"]
+    final_src = session.elf.addr_to_source(final_pc)
+    final_resolved = session.elf.resolve_address(final_pc)
+    return {
+        "status": "ok",
+        "summary": f"Executed up to {max_instructions} instruction(s) without crossing a source line boundary.",
+        "pc": hex(final_pc),
+        "instructions_executed": max_instructions,
+        "source": final_resolved["source"],
+        "file": final_src["file"],
+        "line": final_src["line"],
+        "symbol": final_resolved["symbol"],
+    }
+
+
 def _resolve_breakpoint_address(
     session: SessionState,
     symbol: str | None = None,
     address: int | None = None,
 ) -> int:
     if address is not None:
-        return int(address)
+        return int(address) & ~1
     if symbol is None:
         raise ValueError("either symbol or address must be provided")
     if not session.elf.is_loaded:
@@ -495,4 +563,4 @@ def _resolve_breakpoint_address(
     resolved = session.elf.resolve_symbol(symbol)
     if resolved["address"] is None:
         raise ValueError(f"symbol '{symbol}' could not be resolved")
-    return int(resolved["address"], 16)
+    return int(resolved["address"], 16) & ~1

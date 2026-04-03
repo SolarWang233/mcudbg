@@ -98,24 +98,26 @@ class PyOcdProbeBackend(ProbeBackend):
 
     def set_breakpoint(self, address: int) -> dict[str, Any]:
         self._require_target()
-        success = bool(self._target.set_breakpoint(address))
+        normalized_address = int(address) & ~1
+        success = bool(self._target.set_breakpoint(normalized_address))
         if not success:
-            raise BackendUnavailableError(f"failed to set breakpoint at {hex(address)}")
-        self._breakpoints.add(address)
+            raise BackendUnavailableError(f"failed to set breakpoint at {hex(normalized_address)}")
+        self._breakpoints.add(normalized_address)
         return {
             "status": "ok",
-            "summary": f"Breakpoint set at {hex(address)}.",
-            "address": hex(address),
+            "summary": f"Breakpoint set at {hex(normalized_address)}.",
+            "address": hex(normalized_address),
         }
 
     def clear_breakpoint(self, address: int) -> dict[str, Any]:
         self._require_target()
-        self._target.remove_breakpoint(address)
-        self._breakpoints.discard(address)
+        normalized_address = int(address) & ~1
+        self._target.remove_breakpoint(normalized_address)
+        self._breakpoints.discard(normalized_address)
         return {
             "status": "ok",
-            "summary": f"Breakpoint cleared at {hex(address)}.",
-            "address": hex(address),
+            "summary": f"Breakpoint cleared at {hex(normalized_address)}.",
+            "address": hex(normalized_address),
         }
 
     def clear_all_breakpoints(self) -> dict[str, Any]:
@@ -174,7 +176,11 @@ class PyOcdProbeBackend(ProbeBackend):
 
     def read_core_registers(self) -> dict[str, int]:
         self._require_target()
-        names = ["pc", "lr", "sp", "xpsr"]
+        names = [
+            "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7",
+            "r8", "r9", "r10", "r11", "r12",
+            "sp", "lr", "pc", "xpsr",
+        ]
         return {name: int(self._target.read_core_register(name)) for name in names}
 
     def read_fault_registers(self) -> dict[str, int]:

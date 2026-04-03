@@ -48,7 +48,9 @@ from .tools.probe import set_watchpoint as _set_watchpoint
 from .tools.probe import remove_watchpoint as _remove_watchpoint
 from .tools.probe import clear_all_watchpoints as _clear_all_watchpoints
 from .tools.probe import continue_until as _continue_until
+from .tools.probe import addr_to_source as _addr_to_source
 from .tools.probe import set_breakpoint as _set_breakpoint
+from .tools.probe import source_step as _source_step
 from .tools.probe import step_instruction as _step_instruction
 from .tools.probe import write_memory as _write_memory
 from .tools.probe import write_symbol_value as _write_symbol_value
@@ -219,6 +221,28 @@ async def read_stopped_context(
 async def probe_step() -> dict:
     """Execute one instruction and return the new PC (with symbol if ELF is loaded)."""
     return _step_instruction(session)
+
+
+@mcp.tool()
+async def elf_addr_to_source(address: int) -> dict:
+    """Look up the source file and line number for a given address using DWARF .debug_line.
+
+    Returns file name, line number, and nearest function symbol.
+    Requires ELF loaded with DWARF debug info.
+    Example: elf_addr_to_source(0x08001234)
+    """
+    return _addr_to_source(session, address=address)
+
+
+@mcp.tool()
+async def source_step() -> dict:
+    """Execute instructions until the source line changes (source-level single step).
+
+    Uses DWARF .debug_line to detect line boundaries. Falls back to a single
+    instruction step if no DWARF info is available.
+    Requires ELF loaded with DWARF info and probe connected and target halted.
+    """
+    return _source_step(session)
 
 
 @mcp.tool()
