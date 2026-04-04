@@ -88,6 +88,10 @@ pip install -e .
 
 **Optional:** CMSIS-SVD file for peripheral register decoding. J-Link backend requires `pylink-square`.
 
+## Documentation
+
+- [AI Playbook](docs/ai-playbook.md) - operational guidance for AI assistants using `mcudbg`
+
 ## MCP configuration
 
 ### Claude Desktop / Claude Code
