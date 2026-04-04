@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcudbg"
-version = "0.1.0"
+version = "0.4.0"
 description = "AI-native debugging and observability for embedded boards"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,6 +22,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+jlink = [
+    "pylink-square>=1.0.0",
+]
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.1.0",
