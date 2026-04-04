@@ -28,7 +28,6 @@ def diagnose(
         }
 
     route = _select_route(normalized=normalized, peripheral=peripheral)
-    handler = route["handler"]
 
     if route["name"] == "diagnose_hardfault":
         result = diagnose_hardfault(
@@ -73,6 +72,11 @@ def diagnose(
     result = dict(result)
     result["symptom"] = symptom
     result["diagnose_route"] = route["name"]
+    result["diagnose_profile"] = route["profile"]
+    result["route_reason"] = route["reason"]
+    result["recommended_next_tools"] = _recommended_next_tools(route, inferred_peripheral=route["inferred_peripheral"])
+    result["evidence_focus"] = _evidence_focus(route, inferred_peripheral=route["inferred_peripheral"])
+    result["workflow_stage"] = route["workflow_stage"]
     if route["inferred_peripheral"] is not None and "peripheral" not in result:
         result["peripheral"] = route["inferred_peripheral"]
     if result.get("status") == "ok":
@@ -87,35 +91,45 @@ def _select_route(normalized: str, peripheral: str | None) -> dict[str, str | No
         return {
             "name": "diagnose_hardfault",
             "label": "Routed to hardfault diagnosis",
-            "handler": "diagnose_hardfault",
+            "profile": "hardfault",
+            "reason": "Symptom mentions a crash or HardFault-class failure.",
+            "workflow_stage": "fault-triage",
             "inferred_peripheral": inferred_peripheral,
         }
     if _has_any(normalized, ("stack overflow", "stack smashed", "stack crash", "overflowed stack")):
         return {
             "name": "diagnose_stack_overflow",
             "label": "Routed to stack-overflow diagnosis",
-            "handler": "diagnose_stack_overflow",
+            "profile": "stack-overflow",
+            "reason": "Symptom explicitly mentions stack overflow or stack corruption.",
+            "workflow_stage": "memory-triage",
             "inferred_peripheral": inferred_peripheral,
         }
     if _has_any(normalized, ("memory corruption", "heap corruption", "corruption", "heap overwrite", "stack canary")):
         return {
             "name": "diagnose_memory_corruption",
             "label": "Routed to memory-corruption diagnosis",
-            "handler": "diagnose_memory_corruption",
+            "profile": "memory-corruption",
+            "reason": "Symptom suggests corruption of stack, heap, or guard/canary state.",
+            "workflow_stage": "memory-triage",
             "inferred_peripheral": inferred_peripheral,
         }
     if _has_any(normalized, ("interrupt", "irq", "nvic", "isr", "pending irq")):
         return {
             "name": "diagnose_interrupt_issue",
             "label": "Routed to interrupt diagnosis",
-            "handler": "diagnose_interrupt_issue",
+            "profile": "interrupt",
+            "reason": "Symptom points to IRQ, ISR, or NVIC behavior.",
+            "workflow_stage": "interrupt-triage",
             "inferred_peripheral": inferred_peripheral,
         }
     if _has_any(normalized, ("clock", "pll", "hse", "hsi", "msi", "sws", "system clock")):
         return {
             "name": "diagnose_clock_issue",
             "label": "Routed to clock diagnosis",
-            "handler": "diagnose_clock_issue",
+            "profile": "clock",
+            "reason": "Symptom mentions system clock, PLL, or oscillator selection.",
+            "workflow_stage": "clock-triage",
             "inferred_peripheral": inferred_peripheral,
         }
     if inferred_peripheral is not None or _has_any(
@@ -125,13 +139,26 @@ def _select_route(normalized: str, peripheral: str | None) -> dict[str, str | No
         return {
             "name": "diagnose_peripheral_stuck",
             "label": "Routed to peripheral diagnosis",
-            "handler": "diagnose_peripheral_stuck",
+            "profile": "peripheral",
+            "reason": "Symptom references a peripheral, data path, or missing pin-level output.",
+            "workflow_stage": "peripheral-triage",
+            "inferred_peripheral": inferred_peripheral,
+        }
+    if _has_any(normalized, ("task stuck", "task blocked", "rtos", "deadlock", "scheduler", "thread stuck")):
+        return {
+            "name": "diagnose_startup_failure",
+            "label": "Routed to startup diagnosis",
+            "profile": "rtos-stall",
+            "reason": "No dedicated RTOS stall diagnoser exists yet, so startup/stop-state analysis is used as the broad evidence pass.",
+            "workflow_stage": "rtos-triage",
             "inferred_peripheral": inferred_peripheral,
         }
     return {
         "name": "diagnose_startup_failure",
         "label": "Routed to startup diagnosis",
-        "handler": "diagnose_startup_failure",
+        "profile": "startup",
+        "reason": "No narrower symptom class matched, so startup/state triage is the default broad diagnostic path.",
+        "workflow_stage": "startup-triage",
         "inferred_peripheral": inferred_peripheral,
     }
 
@@ -147,3 +174,42 @@ def _infer_peripheral_name(text: str) -> str | None:
         if upper.startswith(("USART", "UART", "SPI", "I2C", "GPIO", "TIM", "ADC", "DAC", "RCC")):
             return upper
     return None
+
+
+def _recommended_next_tools(route: dict[str, str | None], inferred_peripheral: str | None) -> list[str]:
+    profile = route["profile"]
+    if profile == "hardfault":
+        return ["dwarf_backtrace", "get_locals", "disassemble", "dump_memory"]
+    if profile in {"stack-overflow", "memory-corruption"}:
+        return ["read_stack_usage", "dump_memory", "read_symbol_value"]
+    if profile == "interrupt":
+        return ["read_stopped_context", "svd_read_peripheral", "probe_read_registers"]
+    if profile == "clock":
+        return ["svd_read_peripheral", "read_stopped_context", "dump_memory"]
+    if profile == "peripheral":
+        tools = ["svd_read_peripheral", "read_stopped_context"]
+        if inferred_peripheral is not None:
+            tools.insert(0, f"svd_read_peripheral('{inferred_peripheral}')")
+        return tools
+    if profile == "rtos-stall":
+        return ["list_rtos_tasks", "rtos_task_context", "read_stack_usage", "read_rtt_log"]
+    return ["read_stopped_context", "elf_addr_to_source", "read_rtt_log"]
+
+
+def _evidence_focus(route: dict[str, str | None], inferred_peripheral: str | None) -> list[str]:
+    profile = route["profile"]
+    if profile == "hardfault":
+        return ["fault registers", "PC/LR source location", "backtrace frames", "stack snapshot"]
+    if profile in {"stack-overflow", "memory-corruption"}:
+        return ["stack canary usage", "SP bounds", "heap/stack corruption markers"]
+    if profile == "interrupt":
+        return ["pending IRQ state", "handler context", "NVIC enable/priority state"]
+    if profile == "clock":
+        return ["clock source bits", "PLL status", "system clock switch state"]
+    if profile == "peripheral":
+        if inferred_peripheral is not None:
+            return [f"{inferred_peripheral} register state", "RCC clock gating", "GPIO mux configuration"]
+        return ["peripheral register state", "RCC clock gating", "GPIO mux configuration"]
+    if profile == "rtos-stall":
+        return ["task states", "blocked wait function", "RTT progress logs", "stack high-water marks"]
+    return ["current PC/source location", "recent logs", "fault bits if present"]

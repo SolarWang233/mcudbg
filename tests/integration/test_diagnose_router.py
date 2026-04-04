@@ -17,6 +17,9 @@ def test_diagnose_routes_hardfault(monkeypatch) -> None:
 
     assert result["status"] == "ok"
     assert result["diagnose_route"] == "diagnose_hardfault"
+    assert result["diagnose_profile"] == "hardfault"
+    assert result["workflow_stage"] == "fault-triage"
+    assert "dwarf_backtrace" in result["recommended_next_tools"]
     assert result["summary"].startswith("Routed to hardfault diagnosis:")
 
 
@@ -34,7 +37,9 @@ def test_diagnose_routes_peripheral_and_infers_name(monkeypatch) -> None:
 
     assert result["status"] == "ok"
     assert result["diagnose_route"] == "diagnose_peripheral_stuck"
+    assert result["diagnose_profile"] == "peripheral"
     assert result["peripheral"] == "USART2"
+    assert "GPIO mux configuration" in result["evidence_focus"]
     assert calls == [("USART2", "USART2 no output from TX pin")]
 
 
@@ -50,6 +55,8 @@ def test_diagnose_routes_clock_issue(monkeypatch) -> None:
 
     assert result["status"] == "ok"
     assert result["diagnose_route"] == "diagnose_clock_issue"
+    assert result["diagnose_profile"] == "clock"
+    assert result["workflow_stage"] == "clock-triage"
 
 
 def test_diagnose_falls_back_to_startup(monkeypatch) -> None:
@@ -64,6 +71,8 @@ def test_diagnose_falls_back_to_startup(monkeypatch) -> None:
 
     assert result["status"] == "ok"
     assert result["diagnose_route"] == "diagnose_startup_failure"
+    assert result["diagnose_profile"] == "startup"
+    assert result["workflow_stage"] == "startup-triage"
 
 
 def test_diagnose_requires_non_empty_symptom() -> None:
@@ -72,3 +81,20 @@ def test_diagnose_requires_non_empty_symptom() -> None:
     result = diagnose_router.diagnose(session, symptom="  ")
 
     assert result["status"] == "error"
+
+
+def test_diagnose_marks_rtos_stall_profile(monkeypatch) -> None:
+    session = SimpleNamespace()
+    monkeypatch.setattr(
+        diagnose_router,
+        "diagnose_startup_failure",
+        lambda session, **kwargs: {"status": "ok", "summary": "startup details"},
+    )
+
+    result = diagnose_router.diagnose(session, symptom="FreeRTOS task stuck waiting forever")
+
+    assert result["status"] == "ok"
+    assert result["diagnose_route"] == "diagnose_startup_failure"
+    assert result["diagnose_profile"] == "rtos-stall"
+    assert result["workflow_stage"] == "rtos-triage"
+    assert result["recommended_next_tools"][:2] == ["list_rtos_tasks", "rtos_task_context"]
