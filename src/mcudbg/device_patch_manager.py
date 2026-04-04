@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
-from .chip_matcher import match_chip_name
+from .chip_matcher import match_chip_name, normalize_backend_name
 
 
 _PATCH_TABLE = {
@@ -162,14 +163,26 @@ _PATCH_TABLE = {
 
 
 def resolve_device_patch(target: str, backend: str = "pyocd") -> dict[str, Any]:
-    match_result = match_chip_name(target, backend=backend)
+    canonical_backend = normalize_backend_name(backend)
+    if canonical_backend is None:
+        return {
+            "status": "error",
+            "summary": f"Unsupported probe backend '{backend}'.",
+            "backend": backend,
+            "input": target,
+            "supported_backends": sorted(_PATCH_TABLE.keys()),
+        }
+
+    match_result = match_chip_name(target, backend=canonical_backend)
+    if match_result["status"] != "ok":
+        return match_result
     matched_target = match_result["matched_target"]
-    patch = _PATCH_TABLE.get(backend, {}).get(matched_target)
+    patch = _PATCH_TABLE.get(canonical_backend, {}).get(matched_target)
     if patch is None:
         return {
             "status": "ok",
-            "summary": f"No device patch registered for {matched_target} on {backend}.",
-            "backend": backend,
+            "summary": f"No device patch registered for {matched_target} on {canonical_backend}.",
+            "backend": canonical_backend,
             "input": target,
             "matched_target": matched_target,
             "match_result": match_result,
@@ -187,26 +200,37 @@ def resolve_device_patch(target: str, backend: str = "pyocd") -> dict[str, Any]:
 
     return {
         "status": "ok",
-        "summary": f"Resolved device patch for {matched_target} on {backend}.",
-        "backend": backend,
+        "summary": f"Resolved device patch for {matched_target} on {canonical_backend}.",
+        "backend": canonical_backend,
         "input": target,
         "matched_target": matched_target,
         "match_result": match_result,
         "patch_applied": True,
         "support_tier": patch.get("support_tier", "known"),
         "recommended_probe": patch.get("recommended_probe"),
-        "validated_hardware": patch.get("validated_hardware", []),
-        "validated_capabilities": patch.get("validated_capabilities", []),
-        "connect_hints": patch.get("connect_hints", {}),
-        "post_connect_checks": patch.get("post_connect_checks", {}),
-        "notes": patch.get("notes", []),
-        "warnings": patch.get("warnings", []),
-        "recovery_guidance": patch.get("recovery_guidance", []),
+        "validated_hardware": deepcopy(patch.get("validated_hardware", [])),
+        "validated_capabilities": deepcopy(patch.get("validated_capabilities", [])),
+        "connect_hints": deepcopy(patch.get("connect_hints", {})),
+        "post_connect_checks": deepcopy(patch.get("post_connect_checks", {})),
+        "notes": deepcopy(patch.get("notes", [])),
+        "warnings": deepcopy(patch.get("warnings", [])),
+        "recovery_guidance": deepcopy(patch.get("recovery_guidance", [])),
     }
 
 
 def list_supported_targets(backend: str | None = None) -> dict[str, Any]:
-    backends = [backend] if backend is not None else sorted(_PATCH_TABLE.keys())
+    if backend is not None:
+        canonical_backend = normalize_backend_name(backend)
+        if canonical_backend is None:
+            return {
+                "status": "error",
+                "summary": f"Unsupported probe backend '{backend}'.",
+                "backend": backend,
+                "supported_backends": sorted(_PATCH_TABLE.keys()),
+            }
+        backends = [canonical_backend]
+    else:
+        backends = sorted(_PATCH_TABLE.keys())
     targets: list[dict[str, Any]] = []
 
     for backend_name in backends:
@@ -217,14 +241,14 @@ def list_supported_targets(backend: str | None = None) -> dict[str, Any]:
                     "target": target_name,
                     "support_tier": patch.get("support_tier", "known"),
                     "recommended_probe": patch.get("recommended_probe"),
-                    "validated_capabilities": patch.get("validated_capabilities", []),
-                    "validated_hardware": patch.get("validated_hardware", []),
+                    "validated_capabilities": deepcopy(patch.get("validated_capabilities", [])),
+                    "validated_hardware": deepcopy(patch.get("validated_hardware", [])),
                 }
             )
 
     return {
         "status": "ok",
         "summary": f"Found {len(targets)} supported target profile(s).",
-        "backend": backend,
+        "backend": backends[0] if len(backends) == 1 else None,
         "targets": targets,
     }

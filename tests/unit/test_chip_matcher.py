@@ -21,6 +21,22 @@ def test_match_chip_name_resolves_known_pyocd_alias() -> None:
     assert result["confidence"] == "high"
 
 
+def test_match_chip_name_normalizes_backend_alias() -> None:
+    result = match_chip_name("STM32F103C8T6", backend="J-Link")
+
+    assert result["status"] == "ok"
+    assert result["backend"] == "jlink"
+    assert result["matched_target"] == "STM32F103C8"
+
+
+def test_match_chip_name_reports_unknown_backend() -> None:
+    result = match_chip_name("STM32F103C8T6", backend="blackmagic")
+
+    assert result["status"] == "error"
+    assert "Unsupported probe backend" in result["summary"]
+    assert "pyocd" in result["supported_backends"]
+
+
 def test_connect_probe_applies_backend_specific_match() -> None:
     captured: dict[str, str | None] = {}
     captured_hints: dict[str, object] = {}
@@ -86,9 +102,35 @@ def test_resolve_device_patch_reports_validation_metadata() -> None:
     assert result["validated_hardware"][0]["board"] == "ATK_PICTURE"
 
 
+def test_resolve_device_patch_returns_deep_copies() -> None:
+    first = resolve_device_patch("STM32L496VE", backend="pyocd")
+    first["validated_hardware"][0]["board"] = "BROKEN"
+    first["connect_hints"]["attempts"][0]["frequency"] = 123
+
+    second = resolve_device_patch("STM32L496VE", backend="pyocd")
+
+    assert second["validated_hardware"][0]["board"] == "ATK_PICTURE"
+    assert second["connect_hints"]["attempts"][0]["frequency"] == 4000000
+
+
 def test_list_supported_targets_returns_profiles() -> None:
     result = list_supported_targets(backend="jlink")
 
     assert result["status"] == "ok"
     assert result["backend"] == "jlink"
     assert any(target["target"] == "STM32F103C8" for target in result["targets"])
+
+
+def test_list_supported_targets_normalizes_backend_alias() -> None:
+    result = list_supported_targets(backend="ST-Link")
+
+    assert result["status"] == "ok"
+    assert result["backend"] == "pyocd"
+    assert any(target["target"] == "stm32l496vetx" for target in result["targets"])
+
+
+def test_list_supported_targets_reports_unknown_backend() -> None:
+    result = list_supported_targets(backend="blackmagic")
+
+    assert result["status"] == "error"
+    assert "Unsupported probe backend" in result["summary"]
