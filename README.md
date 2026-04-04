@@ -6,7 +6,7 @@
 
 `mcudbg` is an [MCP](https://modelcontextprotocol.io/) server that gives AI assistants direct access to debug probes, CPU registers, memory, ELF/DWARF symbols, UART logs, SVD peripheral registers, and RTOS state on real hardware.
 
-Most AI coding tools stop at generating firmware. `mcudbg` picks up where they leave off — when the board doesn't boot, the UART is silent, or the firmware crashes into HardFault.
+Most AI coding tools stop at generating firmware. `mcudbg` picks up where they leave off: when the board doesn't boot, the UART is silent, or the firmware crashes into HardFault.
 
 <!-- TODO: replace with actual demo GIF -->
 <!-- ![demo](docs/demo.gif) -->
@@ -16,10 +16,10 @@ Most AI coding tools stop at generating firmware. `mcudbg` picks up where they l
 ```text
 User:  This board doesn't boot after power-on. Help me check.
 
-AI:    Connecting probe… halting target… reading registers…
-       PC = 0x08001A3C → HardFault_Handler (startup.s:42)
-       CFSR = 0x00008200 — precise data bus fault
-       BFAR = 0x00000000 — null pointer dereference
+AI:    Connecting probe, halting target, reading registers...
+       PC = 0x08001A3C -> HardFault_Handler (startup.s:42)
+       CFSR = 0x00008200 -> precise data bus fault
+       BFAR = 0x00000000 -> null pointer dereference
        The firmware hit a null pointer during sensor_init().
        Suggestion: check the I2C handle passed to HAL_I2C_Init().
 ```
@@ -31,13 +31,27 @@ AI:    Connecting probe… halting target… reading registers…
 | Backend | Status |
 |---------|--------|
 | pyOCD (ST-Link, CMSIS-DAP) | Fully supported |
-| J-Link (via pylink-square) | Fully supported |
+| J-Link (via `pylink-square`) | Fully supported |
 
-Both backends support: connect, halt, resume, reset, single-step, breakpoints, watchpoints, memory read/write, flash erase/program/verify, FPU and fault registers.
+Both backends support:
+
+- connect / disconnect
+- halt / resume / reset / single-step
+- breakpoints / watchpoints
+- memory read / write
+- flash erase / program / verify
+- fault and FPU register access
 
 ### ELF and DWARF
 
-Load ELF/AXF files for symbol resolution, source-level stepping, disassembly with source annotations, function listing, local variable inspection, and backtrace.
+Load ELF/AXF files for:
+
+- symbol resolution
+- source-level stepping
+- disassembly with source annotations
+- function listing
+- local variable inspection
+- backtrace
 
 ### SVD peripheral inspection
 
@@ -45,7 +59,7 @@ Load CMSIS-SVD files to decode peripheral registers, inspect clock gating, and d
 
 ### Symptom-driven diagnosis
 
-Tell the AI what's wrong. It decides what to check.
+Tell the AI what is wrong. It decides what to inspect first.
 
 | Tool | Use case |
 |------|----------|
@@ -67,14 +81,16 @@ Hardware-validated FreeRTOS synchronization scenarios now include:
 - queue send / receive
 - binary semaphore handoff
 - software timer (`Tmr Svc`)
-- event group wait/sync
+- event group wait / sync
 - task notify
 - mutex handoff and blocked waiter inspection
 - ISR-to-task notify via timer interrupt
 
 ### Build and flash
 
-Keil UV4 build and flash integration. Full debug loop: diagnose → fix code → build → flash → verify.
+Keil UV4 build and flash integration. Full debug loop:
+
+`diagnose -> fix code -> build -> flash -> verify`
 
 ### GDB server
 
@@ -101,6 +117,8 @@ pip install -e .
 ## Documentation
 
 - [AI Playbook](docs/ai-playbook.md) - operational guidance for AI assistants using `mcudbg`
+- [v0.6 Roadmap](docs/v0.6-roadmap.md) - current post-core roadmap and remaining high-value gaps
+- [Support Matrix](docs/support-matrix.md) - backend, target, and hardware-validated capability coverage
 
 ## MCP configuration
 
@@ -179,7 +197,7 @@ program_flash(0x08010000, [0xAA, 0x55, 0x12, 0x34], verify=True)
 <details>
 <summary>Configuration</summary>
 
-`get_runtime_config` · `list_demo_profiles` · `load_demo_profile` · `configure_probe` · `configure_log` · `configure_elf` · `configure_build` · `connect_with_config`
+`get_runtime_config` · `list_demo_profiles` · `load_demo_profile` · `configure_probe` · `configure_log` · `configure_elf` · `configure_build` · `connect_with_config` · `match_chip_name` · `get_target_info` · `list_supported_targets`
 </details>
 
 <details>
@@ -197,7 +215,7 @@ program_flash(0x08010000, [0xAA, 0x55, 0x12, 0x34], verify=True)
 <details>
 <summary>Registers, memory, and state</summary>
 
-`probe_read_registers` · `probe_read_fpu_registers` · `probe_read_mpu_regions` · `probe_read_memory` · `probe_write_memory` · `dump_memory` · `memory_find` · `memory_snapshot` · `memory_diff` · `read_memory_map` · `read_stopped_context` · `erase_flash` · `program_flash` · `verify_flash`
+`probe_read_registers` · `probe_read_fpu_registers` · `probe_read_mpu_regions` · `probe_read_memory` · `probe_write_memory` · `dump_memory` · `memory_find` · `memory_snapshot` · `memory_diff` · `read_memory_map` · `read_stopped_context` · `erase_flash` · `program_flash` · `verify_flash` · `read_cycle_counter` · `read_swo_log`
 </details>
 
 <details>
@@ -235,7 +253,7 @@ program_flash(0x08010000, [0xAA, 0x55, 0x12, 0x34], verify=True)
 | Board | MCU | Probe | Capabilities verified |
 |-------|-----|-------|----------------------|
 | ATK_PICTURE | STM32L496VETx | ST-Link (pyOCD) | Full: ELF, DWARF, SVD, flash, RTT, RTOS, diagnosis, GDB server; FreeRTOS queue/semaphore/timer/event-group/task-notify/mutex/ISR-notify validated |
-| Custom | STM32F103C8 | J-Link | Full: connect, registers, memory, watchpoints, flash erase/program/verify, J-Link GDB server, RTT |
+| Custom | STM32F103C8 | J-Link | Full: connect, registers, memory, watchpoints, flash erase/program/verify, J-Link GDB server, RTT, DWT cycle counter |
 
 Recent J-Link RTT validation on `STM32F103C8`:
 
@@ -244,42 +262,38 @@ Recent J-Link RTT validation on `STM32F103C8`:
 - Read live channel 0 text via the J-Link backend:
   - `vTaskMsgPro alive`
 
-94 automated tests passing.
+For exact test snapshots and milestone-specific counts, see `PROGRESS.md`.
 
 ## Architecture
 
-```
+```text
 AI assistant / IDE / Agent
-        │
-        ▼
-   ┌─────────┐
-   │ mcudbg  │  MCP server
-   │  core   │  session, tools, result shaping
-   └────┬────┘
-        │
-   ┌────┴─────────────────────────┐
-   │         probe backends       │
-   ├──────────┬───────────────────┤
-   │  pyOCD   │    J-Link         │
-   │ (ST-Link,│  (pylink-square)  │
-   │ CMSIS-DAP│                   │
-   └──────────┴───────────────────┘
-        │
-   ┌────┴────┐  ┌────────┐  ┌──────┐
-   │  UART   │  │  RTT   │  │ SVD  │
-   │   log   │  │  log   │  │parse │
-   └─────────┘  └────────┘  └──────┘
+        |
+        v
+     mcudbg MCP server
+        |
+        +-- core / session / tools / result shaping
+        |
+        +-- probe backends
+        |    +-- pyOCD (ST-Link, CMSIS-DAP)
+        |    +-- J-Link (pylink-square)
+        |
+        +-- UART log / RTT / SVD / ELF-DWARF / RTOS
 ```
 
-Future modules: `mcudbg-io` (GPIO), `mcudbg-bench` (DMM, PSU, scope, logic analyzer).
+Future modules:
+
+- `mcudbg-io` (GPIO)
+- `mcudbg-bench` (DMM, PSU, scope, logic analyzer)
 
 ## Known limitations
 
-- Build/flash integration currently targets Keil UV4 on Windows
-- RTOS inspection requires FreeRTOS with matching config
-- Advanced DWARF features depend on compiler debug info quality
-- `JLinkGDBServerCL` may reject an explicit serial number on some setups; `mcudbg` falls back to auto-selected J-Link when that happens
-- SVD files are not bundled — provide the file for your target chip
+- Build/flash integration currently targets Keil UV4 on Windows.
+- RTOS inspection requires FreeRTOS with matching config and symbols.
+- Advanced DWARF features depend on compiler debug info quality.
+- `JLinkGDBServerCL` may reject an explicit serial number on some setups; `mcudbg` falls back to auto-selected J-Link when that happens.
+- SVD files are not bundled; provide the file for your target chip.
+- SWO text capture remains board-dependent even when the backend path itself works.
 
 ## Contributing
 
