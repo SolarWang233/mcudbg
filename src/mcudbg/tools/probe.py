@@ -892,6 +892,15 @@ def read_rtt_log(
     search_start: int = 0x20000000,
     search_size: int = 0x50000,
 ) -> dict:
+    backend_result = None
+    if hasattr(session.probe, "read_rtt_log"):
+        try:
+            backend_result = session.probe.read_rtt_log(channel=channel, max_bytes=max_bytes)
+        except Exception as e:
+            backend_result = {"status": "error", "summary": str(e)}
+        if backend_result.get("status") == "ok":
+            return backend_result
+
     magic = b"SEGGER RTT\x00"
     chunk_size = 1024
     overlap = 16
@@ -987,6 +996,11 @@ def read_rtt_log(
             "rd_off": rd_off,
             "bytes_available": available,
             "text": raw.decode("utf-8", errors="replace"),
+            **(
+                {"backend_hint": backend_result["summary"]}
+                if backend_result and backend_result.get("status") == "error"
+                else {}
+            ),
         }
     except Exception as e:
         return {

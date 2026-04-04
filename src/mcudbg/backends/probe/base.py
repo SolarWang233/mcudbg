@@ -108,3 +108,6 @@ class ProbeBackend(ABC):
 
     def verify_flash(self, address: int, data: bytes) -> dict[str, Any]:
         raise NotImplementedError
+
+    def read_rtt_log(self, channel: int = 0, max_bytes: int = 4096) -> dict[str, Any]:
+        raise NotImplementedError

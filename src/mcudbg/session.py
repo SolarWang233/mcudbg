@@ -84,6 +84,9 @@ class ProbeBackend(Protocol):
     def clear_all_watchpoints(self) -> dict[str, Any]:
         ...
 
+    def read_rtt_log(self, channel: int = 0, max_bytes: int = 4096) -> dict[str, Any]:
+        ...
+
 
 class LogBackend(Protocol):
     def connect(self, port: str, baudrate: int = 115200) -> dict[str, Any]:

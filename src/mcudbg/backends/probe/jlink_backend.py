@@ -34,6 +34,7 @@ class JLinkProbeBackend(ProbeBackend):
         self._connected = False
         self._target = None
         self._watchpoints: dict[int, tuple[int, int, str]] = {}  # addr -> (size, handle, watch_type)
+        self._rtt_started = False
 
     @classmethod
     def enumerate_probes(cls) -> list[dict[str, Any]]:
@@ -91,11 +92,17 @@ class JLinkProbeBackend(ProbeBackend):
     def disconnect(self) -> dict[str, Any]:
         if self._jlink is not None:
             try:
+                if self._rtt_started:
+                    try:
+                        self._jlink.rtt_stop()
+                    except Exception:
+                        pass
                 self._jlink.close()
             finally:
                 self._jlink = None
                 self._connected = False
                 self._watchpoints.clear()
+                self._rtt_started = False
         return {"status": "ok", "summary": "Disconnected J-Link probe."}
 
     def halt(self) -> dict[str, Any]:
@@ -367,6 +374,51 @@ class JLinkProbeBackend(ProbeBackend):
                 "match": match,
                 "mismatch_count": mismatch_count,
                 "first_mismatch_address": None if first_mismatch_address is None else hex(first_mismatch_address),
+            }
+        except Exception as e:
+            return {"status": "error", "summary": str(e)}
+
+    def read_rtt_log(self, channel: int = 0, max_bytes: int = 4096) -> dict[str, Any]:
+        self._require_connected()
+        try:
+            if not self._rtt_started:
+                self._jlink.rtt_start()
+                self._rtt_started = True
+
+            up_buffers = self._jlink.rtt_get_num_up_buffers()
+            if up_buffers <= 0:
+                return {
+                    "status": "error",
+                    "summary": "J-Link RTT is active but no up-buffers were reported by the target.",
+                }
+            if channel >= up_buffers:
+                return {
+                    "status": "error",
+                    "summary": f"RTT up-buffer channel {channel} is out of range (max {up_buffers - 1}).",
+                }
+
+            status = None
+            try:
+                status = self._jlink.rtt_get_status()
+            except Exception:
+                status = None
+            if status is not None and not isinstance(status, (str, int, float, bool)):
+                status = str(status)
+
+            raw = bytes(self._jlink.rtt_read(channel, max_bytes))
+            return {
+                "status": "ok",
+                "summary": f"Read {len(raw)} byte(s) from J-Link RTT channel {channel}.",
+                "backend": "jlink",
+                "channel": channel,
+                "up_buffer_count": up_buffers,
+                "rtt_status": status,
+                "bytes_available": len(raw),
+                "text": raw.decode("utf-8", errors="replace"),
+                "cb_address": None,
+                "buffer_size": None,
+                "wr_off": None,
+                "rd_off": None,
             }
         except Exception as e:
             return {"status": "error", "summary": str(e)}
