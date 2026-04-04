@@ -19,6 +19,7 @@ class _FakeJLink:
         self.connected_target = None
         self.closed = False
         self.breakpoints: list[int] = []
+        self._halted = True
 
     def open(self, serial_no=None) -> None:
         self.open_calls.append(serial_no)
@@ -33,10 +34,10 @@ class _FakeJLink:
         self.closed = True
 
     def halt(self) -> None:
-        pass
+        self._halted = True
 
     def restart(self) -> None:
-        pass
+        self._halted = False
 
     def reset(self, halt: bool = False) -> None:
         self.reset_halt = halt
@@ -51,7 +52,7 @@ class _FakeJLink:
         self.breakpoints.clear()
 
     def halted(self) -> bool:
-        return True
+        return self._halted
 
     def register_read(self, name: str) -> int:
         return {
@@ -316,3 +317,15 @@ def test_jlink_read_core_registers_uses_aliases(monkeypatch) -> None:
     assert result["pc"] == 0x08001234
     assert result["sp"] == 0x20001000
     assert result["lr"] == 0x08000101
+
+
+def test_jlink_continue_target_halts_before_reading_pc_on_timeout(monkeypatch) -> None:
+    backend, fake = _make_connected_backend(monkeypatch)
+    fake._halted = False
+
+    result = backend.continue_target(timeout_seconds=0.0, poll_interval_seconds=0.0)
+
+    assert result["status"] == "ok"
+    assert result["stop_reason"] == "timeout"
+    assert result["pc"] == hex(0x08001234)
+    assert fake.halted() is True

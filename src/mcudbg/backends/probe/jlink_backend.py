@@ -153,10 +153,13 @@ class JLinkProbeBackend(ProbeBackend):
                 }
             time.sleep(poll_interval_seconds)
 
+        # J-Link cannot read core registers while the CPU is still running.
+        # Halt before sampling PC so timeout results are still useful to higher-level tools.
+        self._jlink.halt()
         pc = self._read_register("pc")
         return {
             "status": "ok",
-            "summary": f"Timeout expired; target still running near {hex(pc)}.",
+            "summary": f"Timeout expired; target was halted at {hex(pc)} for inspection.",
             "pc": hex(pc),
             "stop_reason": "timeout",
         }
