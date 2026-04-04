@@ -34,8 +34,6 @@ _PATCH_TABLE = {
                 "speeds": [4000, 1000, 400, "auto"],
             },
             "post_connect_checks": {
-                "halt": True,
-                "read_core_registers": True,
                 "read_state": True,
             },
             "notes": [
@@ -71,8 +69,6 @@ _PATCH_TABLE = {
                 "speeds": [4000, 1000, "auto"],
             },
             "post_connect_checks": {
-                "halt": True,
-                "read_core_registers": True,
                 "read_state": True,
             },
             "notes": [
@@ -108,8 +104,6 @@ _PATCH_TABLE = {
                 ],
             },
             "post_connect_checks": {
-                "halt": True,
-                "read_core_registers": True,
                 "read_state": True,
             },
             "notes": [
@@ -153,8 +147,6 @@ _PATCH_TABLE = {
                 ],
             },
             "post_connect_checks": {
-                "halt": True,
-                "read_core_registers": True,
                 "read_state": True,
             },
             "notes": [

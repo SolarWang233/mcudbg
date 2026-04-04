@@ -42,6 +42,7 @@ class _FakeJLink:
     def swo_enable(self, cpu_speed, swo_speed=9600, port_mask=0x01) -> None:
         self._swo_enabled = True
         self.swo_enable_args = (cpu_speed, swo_speed, port_mask)
+        self.swo_enable_calls = getattr(self, "swo_enable_calls", 0) + 1
 
     def swo_num_bytes(self) -> int:
         return len(self._swo_buffer)
@@ -147,6 +148,28 @@ def test_jlink_backend_read_swo_log_enables_and_reads(monkeypatch) -> None:
     assert result["bytes_read"] == 10
     assert result["text"] == "SWO hello\n"
     assert fake.swo_enable_args == (72000000, 2000000, 0x01)
+
+
+def test_jlink_backend_read_swo_log_reconfigures_when_parameters_change(monkeypatch) -> None:
+    fake = _FakeJLink()
+    monkeypatch.setattr(jlink_backend, "pylink", _fake_pylink_module(fake))
+    monkeypatch.setattr(jlink_backend, "pylink_library", _fake_library_module())
+    monkeypatch.setattr(
+        jlink_backend.JLinkProbeBackend,
+        "_resolve_dll_path",
+        classmethod(lambda cls, dll_path=None: dll_path or "E:/software/jlink/JLink_x64.dll"),
+    )
+
+    backend = jlink_backend.JLinkProbeBackend(dll_path="E:/software/jlink/JLink_x64.dll")
+    backend.connect(target="STM32F103C8")
+
+    backend.read_swo_log(cpu_speed_hz=72000000, swo_speed_hz=2000000, max_bytes=16)
+    fake._swo_buffer = list(b"AB")
+    result = backend.read_swo_log(cpu_speed_hz=72000000, swo_speed_hz=1000000, max_bytes=16, port_mask=0x03)
+
+    assert result["status"] == "ok"
+    assert fake.swo_enable_calls == 2
+    assert fake.swo_enable_args == (72000000, 1000000, 0x03)
 
 
 def test_read_swo_log_reports_unsupported_backend() -> None:

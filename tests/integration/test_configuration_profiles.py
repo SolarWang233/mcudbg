@@ -5,6 +5,7 @@ from mcudbg.tools.configuration import (
     configure_elf,
     configure_log,
     configure_probe,
+    connect_with_config,
     get_target_info,
     load_demo_profile,
     match_chip_name,
@@ -90,3 +91,46 @@ def test_get_target_info_reports_patch_metadata() -> None:
     assert result["status"] == "ok"
     assert result["matched_target"] == "STM32F103C8"
     assert result["patch_applied"] is True
+
+
+def test_connect_with_config_uses_same_probe_preflight_path() -> None:
+    captured: dict[str, object] = {"hints": None}
+
+    class _Probe:
+        def set_connect_hints(self, hints):
+            captured["hints"] = hints
+
+        def connect(self, *, target, unique_id=None):
+            captured["target"] = target
+            captured["unique_id"] = unique_id
+            return {"status": "ok", "summary": f"Connected to {target}."}
+
+        def get_state(self):
+            return "running"
+
+    class _Log:
+        def connect(self, port, baudrate=115200):
+            return {"status": "ok", "summary": f"log {port} {baudrate}"}
+
+    class _Elf:
+        def load(self, path):
+            return {"status": "ok", "summary": f"elf {path}"}
+
+    session = SessionState()
+    session.probe = _Probe()
+    session.log = _Log()
+    session.elf = _Elf()
+    session.config.probe.backend = "jlink"
+    session.config.probe.target = "STM32F103C8T6"
+    session.config.probe.unique_id = "240710115"
+    session.config.log.port = "COM3"
+    session.config.elf.path = r"d:\demo\firmware.axf"
+
+    result = connect_with_config(session)
+
+    assert result["status"] == "ok"
+    assert result["results"]["probe"]["target_match"]["matched_target"] == "STM32F103C8"
+    assert result["results"]["probe"]["target_patch"]["patch_applied"] is True
+    assert captured["target"] == "STM32F103C8"
+    assert captured["unique_id"] == "240710115"
+    assert captured["hints"] == {"speeds": [4000, 1000, 400, "auto"]}

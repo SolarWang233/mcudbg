@@ -185,7 +185,10 @@ def connect_with_config(session: SessionState) -> dict:
         missing.append("probe.target")
     else:
         try:
-            results["probe"] = session.probe.connect(
+            from .probe import connect_probe
+
+            results["probe"] = connect_probe(
+                session,
                 target=target,
                 unique_id=session.config.probe.unique_id,
             )

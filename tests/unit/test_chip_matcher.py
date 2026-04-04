@@ -24,7 +24,6 @@ def test_match_chip_name_resolves_known_pyocd_alias() -> None:
 def test_connect_probe_applies_backend_specific_match() -> None:
     captured: dict[str, str | None] = {}
     captured_hints: dict[str, object] = {}
-    halt_called = {"value": False}
 
     def _connect(*, target: str, unique_id: str | None = None) -> dict:
         captured["target"] = target
@@ -34,23 +33,14 @@ def test_connect_probe_applies_backend_specific_match() -> None:
     def _set_connect_hints(hints: dict) -> None:
         captured_hints.update(hints)
 
-    def _halt() -> dict:
-        halt_called["value"] = True
-        return {"status": "ok", "summary": "halted"}
-
-    def _read_core_registers() -> dict:
-        return {"pc": 0x08000000, "sp": 0x20000000, "lr": 0xFFFFFFFF, "xpsr": 0x01000000}
-
     def _get_state() -> str:
-        return "halted"
+        return "running"
 
     session = SimpleNamespace(
         config=SimpleNamespace(probe=SimpleNamespace(backend="jlink")),
         probe=SimpleNamespace(
             connect=_connect,
             set_connect_hints=_set_connect_hints,
-            halt=_halt,
-            read_core_registers=_read_core_registers,
             get_state=_get_state,
         ),
     )
@@ -62,9 +52,8 @@ def test_connect_probe_applies_backend_specific_match() -> None:
     assert result["target_match"]["matched_target"] == "STM32F103C8"
     assert result["target_patch"]["patch_applied"] is True
     assert captured_hints["speeds"] == [4000, 1000, 400, "auto"]
-    assert halt_called["value"] is True
-    assert result["post_connect"]["state"] == "halted"
-    assert result["post_connect"]["core_registers"]["pc"] == 0x08000000
+    assert "halt" not in result["post_connect"]
+    assert result["post_connect"]["state"] == "running"
 
 
 def test_resolve_device_patch_returns_connect_hints() -> None:
@@ -74,7 +63,8 @@ def test_resolve_device_patch_returns_connect_hints() -> None:
     assert result["matched_target"] == "stm32l496vetx"
     assert result["patch_applied"] is True
     assert result["connect_hints"]["attempts"][0]["frequency"] == 4000000
-    assert result["post_connect_checks"]["halt"] is True
+    assert result["post_connect_checks"]["read_state"] is True
+    assert "halt" not in result["post_connect_checks"]
     assert result["recovery_guidance"]
 
 

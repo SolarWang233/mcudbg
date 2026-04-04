@@ -43,6 +43,7 @@ class JLinkProbeBackend(ProbeBackend):
         self._watchpoints: dict[int, tuple[int, int, str]] = {}  # addr -> (size, handle, watch_type)
         self._rtt_started = False
         self._connect_hints: dict[str, Any] = {}
+        self._swo_config: tuple[int, int, int] | None = None
 
     def set_connect_hints(self, hints: dict[str, Any]) -> None:
         self._connect_hints = dict(hints)
@@ -135,6 +136,7 @@ class JLinkProbeBackend(ProbeBackend):
                 self._breakpoints.clear()
                 self._watchpoints.clear()
                 self._rtt_started = False
+                self._swo_config = None
         return {"status": "ok", "summary": "Disconnected J-Link probe."}
 
     def halt(self) -> dict[str, Any]:
@@ -521,8 +523,10 @@ class JLinkProbeBackend(ProbeBackend):
             if max_bytes <= 0:
                 raise ValueError("max_bytes must be greater than 0.")
 
-            if not self._jlink.swo_enabled():
+            requested_config = (cpu_speed_hz, swo_speed_hz, port_mask)
+            if (not self._jlink.swo_enabled()) or (self._swo_config != requested_config):
                 self._jlink.swo_enable(cpu_speed_hz, swo_speed_hz, port_mask=port_mask)
+                self._swo_config = requested_config
 
             available = int(self._jlink.swo_num_bytes())
             to_read = min(max_bytes, max(available, 0))
