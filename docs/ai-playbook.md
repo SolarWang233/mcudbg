@@ -36,13 +36,15 @@ Prefer:
 
 When the user reports a board problem and does not specify a tool sequence:
 
-1. `probe_connect(...)`
-2. `probe_halt()` or `probe_reset(halt=True)`
-3. `read_stopped_context()`
-4. If the symptom is broad, call `diagnose(...)`
-5. If symbols are available, call `elf_load(...)`
-6. If peripheral state matters, call `svd_load(...)`
-7. If RTOS or logs matter, inspect `read_rtt_log()` and `list_rtos_tasks()`
+1. If the target name may be ambiguous, call `match_chip_name(...)` or `get_target_info(...)`
+2. `configure_probe(...)`
+3. `probe_connect(...)`
+4. `probe_halt()` or `probe_reset(halt=True)`
+5. `read_stopped_context()`
+6. If the symptom is broad, call `diagnose(...)`
+7. If symbols are available, call `elf_load(...)`
+8. If peripheral state matters, call `svd_load(...)`
+9. If RTOS or logs matter, inspect `read_rtt_log()` and `list_rtos_tasks()`
 
 Use this as the default decision tree:
 
@@ -54,7 +56,42 @@ Use this as the default decision tree:
 
 ---
 
-## 3. Preconditions Matrix
+## 3. Target Preflight
+
+Before connecting to a board with a user-supplied chip name:
+
+1. Call `list_supported_targets(backend)` if you want to see the built-in support matrix first.
+2. Call `match_chip_name(target, backend)` if you only need canonicalization.
+3. Call `get_target_info(target, backend)` if you also want board/chip guidance.
+4. Then call `configure_probe(...)` with the resolved backend and target.
+5. Then call `probe_connect(...)`.
+
+Use `get_target_info(...)` when:
+
+- the user gave a package/full marketing name like `STM32F103C8T6`
+- the backend has different preferred target strings
+- you want preflight warnings or recovery guidance before the first attach
+
+Use `list_supported_targets(...)` when:
+
+- the user did not provide a precise MCU string
+- you want to know which target names are already validated
+- you want to choose a backend based on proven board coverage
+
+Interpretation:
+
+- `support_tier`: whether this target/backend pair is `validated`, `known`, or `unknown`
+- `validated_hardware`: board/probe combinations already exercised on real hardware
+- `validated_capabilities`: the parts of the workflow already proven on that target/backend pair
+- `matched_target`: backend-specific target string that should actually be used
+- `connect_hints`: preferred speed/attach strategy for that board family
+- `warnings`: likely board-specific pitfalls
+- `recovery_guidance`: what to try next if attach is unstable
+- `post_connect_checks`: lightweight sanity checks that may run automatically after connect
+
+---
+
+## 4. Preconditions Matrix
 
 ### Probe-only tools
 
@@ -122,6 +159,16 @@ Examples:
 - `rtos_task_context`
 - `read_stack_usage`
 
+Validated demo patterns on the STM32L496 test board include:
+
+- queue producer/consumer
+- semaphore handoff
+- software timer service task
+- event group wait (`xEventGroupWaitBits`)
+- task notify (`ulTaskNotifyTake`)
+- mutex wait path
+- ISR-to-task notify from a timer interrupt
+
 ### RTT tools
 
 Require:
@@ -149,7 +196,7 @@ Examples:
 
 ---
 
-## 4. Backend Guidance
+## 5. Backend Guidance
 
 ### pyOCD
 
@@ -163,6 +210,11 @@ Strengths:
 - broad coverage
 - strong STM32 workflow
 - good default path for ST-Link
+
+Patch-aware guidance:
+
+- prefers canonical lower-case target strings such as `stm32f103c8`
+- may automatically retry with lower frequency or `under-reset`
 
 ### J-Link
 
@@ -185,10 +237,12 @@ Notes:
 - DLL auto-discovery is supported
 - some setups may reject explicit serial selection for `JLinkGDBServerCL`
 - stale local processes can block new J-Link sessions; clean shutdown matters
+- prefers canonical J-Link device names such as `STM32F103C8`
+- may automatically retry lower SWD speeds before failing
 
 ---
 
-## 5. Recommended Tool Groups
+## 6. Recommended Tool Groups
 
 ### Bring-up and execution control
 
@@ -196,6 +250,9 @@ Use first when the board is unresponsive or you need a known stop point.
 
 Primary tools:
 
+- `match_chip_name`
+- `get_target_info`
+- `configure_probe`
 - `probe_connect`
 - `probe_halt`
 - `probe_reset`
@@ -268,24 +325,27 @@ Primary tools:
 
 ---
 
-## 6. Diagnosis Patterns
+## 7. Diagnosis Patterns
 
 ### Pattern: board won't boot
 
-1. `probe_connect`
-2. `probe_reset(halt=True)`
-3. `read_stopped_context`
-4. `diagnose("board won't boot")`
-5. If PC is in startup or a fault handler, use `backtrace` / `disassemble`
+1. `get_target_info`
+2. `configure_probe`
+3. `probe_connect`
+4. `probe_reset(halt=True)`
+5. `read_stopped_context`
+6. `diagnose("board won't boot")`
+7. If PC is in startup or a fault handler, use `backtrace` / `disassemble`
 
 ### Pattern: hardfault after reset
 
-1. `probe_connect`
-2. `probe_halt`
-3. `diagnose_hardfault`
-4. `backtrace` or `dwarf_backtrace`
-5. `get_locals`
-6. inspect fault registers and nearby memory
+1. `get_target_info`
+2. `probe_connect`
+3. `probe_halt`
+4. `diagnose_hardfault`
+5. `backtrace` or `dwarf_backtrace`
+6. `get_locals`
+7. inspect fault registers and nearby memory
 
 ### Pattern: UART has no output
 
@@ -306,14 +366,25 @@ Primary tools:
 
 ### Pattern: verify J-Link RTT
 
-1. `probe_connect(backend="jlink", ...)`
-2. `read_rtt_log(channel=0)`
-3. if text is empty but control block is visible, retry
-4. if needed, use `scripts/jlink_rtt_smoke.py`
+1. `get_target_info(target, backend="jlink")`
+2. `configure_probe(backend="jlink", ...)`
+3. `probe_connect(...)`
+4. `read_rtt_log(channel=0)`
+5. if text is empty but control block is visible, retry
+6. if needed, use `scripts/jlink_rtt_smoke.py`
+
+### Pattern: first attach to an unfamiliar board
+
+1. `list_connected_probes`
+2. `get_target_info`
+3. inspect `warnings` and `recovery_guidance`
+4. `configure_probe`
+5. `probe_connect`
+6. inspect `target_patch` and `post_connect`
 
 ---
 
-## 7. Interpretation Rules
+## 8. Interpretation Rules
 
 ### Treat these as evidence, not conclusions
 
@@ -333,10 +404,12 @@ Primary tools:
 - `bytes_available = 0` for RTT does not prove RTT is broken
 - RTOS state labels should be interpreted together with PC/source context
 - `condition_skip_count` on conditional breakpoints is useful evidence of retry behavior
+- `target_patch` explains why the backend may have used a different speed or attach strategy
+- `post_connect` is evidence that the target was responsive immediately after attach
 
 ---
 
-## 8. Validated Hardware Paths
+## 9. Validated Hardware Paths
 
 The most trustworthy current paths are:
 
@@ -352,7 +425,7 @@ Validated J-Link path includes:
 
 ---
 
-## 9. Safe Operation Rules
+## 10. Safe Operation Rules
 
 Prefer this order:
 
@@ -374,7 +447,7 @@ If a probe session behaves strangely:
 
 ---
 
-## 10. Suggested Companion Material
+## 11. Suggested Companion Material
 
 This playbook works best together with:
 

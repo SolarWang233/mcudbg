@@ -62,6 +62,16 @@ Tell the AI what's wrong. It decides what to check.
 
 FreeRTOS task listing and per-task context inspection. Segger RTT log scanning and reading, including native J-Link RTT reads with RAM-scan fallback.
 
+Hardware-validated FreeRTOS synchronization scenarios now include:
+
+- queue send / receive
+- binary semaphore handoff
+- software timer (`Tmr Svc`)
+- event group wait/sync
+- task notify
+- mutex handoff and blocked waiter inspection
+- ISR-to-task notify via timer interrupt
+
 ### Build and flash
 
 Keil UV4 build and flash integration. Full debug loop: diagnose → fix code → build → flash → verify.
@@ -114,6 +124,7 @@ On macOS/Linux, use `python3` instead of `python`.
 ### 1. Connect probe and load symbols
 
 ```python
+list_supported_targets("pyocd")  # optional preflight support matrix
 probe_connect(target="stm32l496vetx", backend="pyocd")
 elf_load("firmware.axf")
 svd_load("STM32L4x6.svd")  # optional
@@ -223,7 +234,7 @@ program_flash(0x08010000, [0xAA, 0x55, 0x12, 0x34], verify=True)
 
 | Board | MCU | Probe | Capabilities verified |
 |-------|-----|-------|----------------------|
-| ATK_PICTURE | STM32L496VETx | ST-Link (pyOCD) | Full: ELF, DWARF, SVD, flash, RTT, RTOS, diagnosis, GDB server |
+| ATK_PICTURE | STM32L496VETx | ST-Link (pyOCD) | Full: ELF, DWARF, SVD, flash, RTT, RTOS, diagnosis, GDB server; FreeRTOS queue/semaphore/timer/event-group/task-notify/mutex/ISR-notify validated |
 | Custom | STM32F103C8 | J-Link | Full: connect, registers, memory, watchpoints, flash erase/program/verify, J-Link GDB server, RTT |
 
 Recent J-Link RTT validation on `STM32F103C8`:
