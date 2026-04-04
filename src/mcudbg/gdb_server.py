@@ -9,7 +9,7 @@ from typing import Any
 
 
 class GdbServerRuntime:
-    """Manage a pyOCD GDB server subprocess."""
+    """Manage pyOCD or J-Link GDB server subprocesses."""
 
     def __init__(self) -> None:
         self._process: subprocess.Popen[str] | None = None
@@ -21,8 +21,12 @@ class GdbServerRuntime:
         self._port: int = 3333
         self._telnet_port: int = 4444
         self._probe_server_port: int = 5555
+        self._backend: str = "pyocd"
         self._target: str | None = None
         self._unique_id: str | None = None
+        self._interface: str | None = None
+        self._speed: int | None = None
+        self._exe_path: str | None = None
         self._elf_path: str | None = None
         self._persist: bool = False
         self._last_exit_code: int | None = None
@@ -127,14 +131,122 @@ class GdbServerRuntime:
         self._port = port
         self._telnet_port = telnet_port
         self._probe_server_port = probe_server_port
+        self._backend = "pyocd"
         self._target = target
         self._unique_id = unique_id
+        self._interface = None
+        self._speed = None
+        self._exe_path = sys.executable
         self._elf_path = elf_path
         self._persist = persist
         self._last_exit_code = None
         return {
             "status": "ok",
             "summary": f"Started GDB server on {host}:{port}.",
+            **self.status(),
+        }
+
+    def start_jlink(
+        self,
+        *,
+        target: str,
+        serial_no: str | None = None,
+        port: int = 2331,
+        interface: str = "swd",
+        speed: int = 4000,
+        exe_path: str,
+        cwd: str | None = None,
+        startup_timeout_seconds: float = 1.0,
+    ) -> dict[str, Any]:
+        if self.is_running():
+            return {
+                "status": "ok",
+                "summary": f"GDB server is already running on {self._host}:{self._port}.",
+                **self.status(),
+            }
+
+        self._close_log_handle()
+
+        host = "127.0.0.1"
+        workdir = Path(cwd) if cwd else Path(exe_path).resolve().parent
+        log_path = Path(tempfile.gettempdir()) / f"mcudbg_jlink_gdbserver_{port}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = log_path.open("w", encoding="utf-8", errors="replace")
+
+        command = [
+            exe_path,
+            "-device",
+            target,
+            "-if",
+            interface.upper(),
+            "-speed",
+            str(speed),
+            "-port",
+            str(port),
+            "-noir",
+        ]
+        if serial_no:
+            command.extend(["-select", f"usb={serial_no}"])
+
+        process = subprocess.Popen(
+            command,
+            cwd=str(workdir),
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        time.sleep(max(0.1, startup_timeout_seconds))
+
+        if process.poll() is not None:
+            exit_code = process.returncode
+            log_handle.close()
+            self._log_handle = None
+            log_text = log_path.read_text(encoding="utf-8", errors="replace") if log_path.exists() else ""
+            self._process = None
+            self._log_path = str(log_path)
+            self._command = command
+            self._cwd = str(workdir)
+            self._last_exit_code = exit_code
+            return {
+                "status": "error",
+                "summary": f"GDB server exited during startup with code {exit_code}.",
+                "running": False,
+                "host": host,
+                "port": port,
+                "target": target,
+                "unique_id": serial_no,
+                "interface": interface.upper(),
+                "speed": speed,
+                "backend": "jlink",
+                "exe_path": exe_path,
+                "command": command,
+                "cwd": str(workdir),
+                "log_path": str(log_path),
+                "log_tail": self._tail_text(log_text),
+                "exit_code": exit_code,
+            }
+
+        self._process = process
+        self._log_handle = log_handle
+        self._log_path = str(log_path)
+        self._command = command
+        self._cwd = str(workdir)
+        self._host = host
+        self._port = port
+        self._telnet_port = 0
+        self._probe_server_port = 0
+        self._backend = "jlink"
+        self._target = target
+        self._unique_id = serial_no
+        self._interface = interface.upper()
+        self._speed = speed
+        self._exe_path = exe_path
+        self._elf_path = None
+        self._persist = False
+        self._last_exit_code = None
+        return {
+            "status": "ok",
+            "summary": f"Started J-Link GDB server on {host}:{port}.",
             **self.status(),
         }
 
@@ -171,12 +283,16 @@ class GdbServerRuntime:
         return {
             "running": running,
             "state": "running" if running else "stopped",
+            "backend": self._backend,
             "host": self._host,
             "port": self._port,
             "telnet_port": self._telnet_port,
             "probe_server_port": self._probe_server_port,
             "target": self._target,
             "unique_id": self._unique_id,
+            "interface": self._interface,
+            "speed": self._speed,
+            "exe_path": self._exe_path,
             "elf_path": self._elf_path,
             "persist": self._persist,
             "command": self._command,
