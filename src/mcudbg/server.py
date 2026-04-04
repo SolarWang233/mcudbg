@@ -18,8 +18,11 @@ from .tools.diagnose import diagnose_hardfault as _diagnose_hardfault
 from .tools.diagnose import diagnose_startup_failure as _diagnose_startup_failure
 from .tools.diagnose_router import diagnose as _diagnose
 from .tools.gdb_server import get_gdb_server_status as _get_gdb_server_status
+from .tools.gdb_server import get_jlink_gdb_server_status as _get_jlink_gdb_server_status
 from .tools.gdb_server import start_gdb_server as _start_gdb_server
+from .tools.gdb_server import start_jlink_gdb_server as _start_jlink_gdb_server
 from .tools.gdb_server import stop_gdb_server as _stop_gdb_server
+from .tools.gdb_server import stop_jlink_gdb_server as _stop_jlink_gdb_server
 from .tools.svd import svd_load as _svd_load
 from .tools.svd import svd_list_peripherals as _svd_list_peripherals
 from .tools.svd import svd_get_registers as _svd_get_registers
@@ -233,6 +236,44 @@ async def stop_gdb_server(timeout_seconds: float = 5.0) -> dict:
 async def get_gdb_server_status() -> dict:
     """Return whether the pyOCD GDB server is running and which ports it uses."""
     return _get_gdb_server_status(session)
+
+
+@mcp.tool()
+async def start_jlink_gdb_server(
+    target: str | None = None,
+    serial_no: str | None = None,
+    port: int = 2331,
+    interface: str = "swd",
+    speed: int = 4000,
+    exe_path: str | None = None,
+) -> dict:
+    """Start a J-Link GDB server for the configured target.
+
+    Uses the current probe config when target/serial_no are omitted.
+    Example: start_jlink_gdb_server(target='STM32F103C8', serial_no='240710115')
+    Example: start_jlink_gdb_server(port=2332, speed=1000)
+    """
+    return _start_jlink_gdb_server(
+        session,
+        target=target,
+        serial_no=serial_no,
+        port=port,
+        interface=interface,
+        speed=speed,
+        exe_path=exe_path,
+    )
+
+
+@mcp.tool()
+async def stop_jlink_gdb_server(timeout_seconds: float = 5.0) -> dict:
+    """Stop the active J-Link GDB server process if one is running."""
+    return _stop_jlink_gdb_server(session, timeout_seconds=timeout_seconds)
+
+
+@mcp.tool()
+async def get_jlink_gdb_server_status() -> dict:
+    """Return whether the J-Link GDB server is running and which port it uses."""
+    return _get_jlink_gdb_server_status(session)
 
 
 @mcp.tool()

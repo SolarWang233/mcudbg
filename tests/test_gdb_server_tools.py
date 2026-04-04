@@ -3,7 +3,15 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from mcudbg.gdb_server import GdbServerRuntime
-from mcudbg.tools.gdb_server import get_gdb_server_status, start_gdb_server, stop_gdb_server
+import mcudbg.tools.gdb_server as gdb_server_tools
+from mcudbg.tools.gdb_server import (
+    get_gdb_server_status,
+    get_jlink_gdb_server_status,
+    start_gdb_server,
+    start_jlink_gdb_server,
+    stop_gdb_server,
+    stop_jlink_gdb_server,
+)
 
 
 class _FakeProcess:
@@ -103,6 +111,7 @@ def test_runtime_status_reflects_running_process() -> None:
 
     assert status["running"] is True
     assert status["state"] == "running"
+    assert status["backend"] == "pyocd"
 
 
 def test_runtime_stop_terminates_process() -> None:
@@ -116,3 +125,166 @@ def test_runtime_stop_terminates_process() -> None:
     assert result["status"] == "ok"
     assert result["running"] is False
     assert result["exit_code"] == 0
+
+
+def test_start_jlink_gdb_server_uses_session_defaults(monkeypatch) -> None:
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        gdb_server_tools,
+        "_resolve_jlink_gdb_server_path",
+        lambda exe_path=None: exe_path or r"E:\software\jlink\JLinkGDBServerCL.exe",
+    )
+    session = SimpleNamespace(
+        config=SimpleNamespace(
+            probe=SimpleNamespace(target="STM32F103C8", unique_id="240710115"),
+        ),
+        gdb_server=SimpleNamespace(
+            start_jlink=lambda **kwargs: calls.append(kwargs) or {"status": "ok", "summary": "started"},
+        ),
+    )
+
+    result = start_jlink_gdb_server(session, speed=1000)
+
+    assert result["status"] == "ok"
+    assert calls == [{
+        "target": "STM32F103C8",
+        "serial_no": "240710115",
+        "port": 2331,
+        "interface": "swd",
+        "speed": 1000,
+        "exe_path": r"E:\software\jlink\JLinkGDBServerCL.exe",
+        "cwd": r"E:\software\jlink",
+    }]
+
+
+def test_start_jlink_gdb_server_requires_target(monkeypatch) -> None:
+    monkeypatch.setattr(
+        gdb_server_tools,
+        "_resolve_jlink_gdb_server_path",
+        lambda exe_path=None: exe_path or r"E:\software\jlink\JLinkGDBServerCL.exe",
+    )
+    session = SimpleNamespace(
+        config=SimpleNamespace(
+            probe=SimpleNamespace(target=None, unique_id=None),
+        ),
+        gdb_server=SimpleNamespace(),
+    )
+
+    result = start_jlink_gdb_server(session)
+
+    assert result["status"] == "error"
+
+
+def test_start_jlink_gdb_server_retries_without_serial_on_selection_failure(monkeypatch) -> None:
+    monkeypatch.setattr(
+        gdb_server_tools,
+        "_resolve_jlink_gdb_server_path",
+        lambda exe_path=None: exe_path or r"E:\software\jlink\JLinkGDBServerCL.exe",
+    )
+    calls: list[dict] = []
+
+    def _start_jlink(**kwargs):
+        calls.append(kwargs)
+        if kwargs["serial_no"] is not None:
+            return {
+                "status": "error",
+                "summary": "startup failed",
+                "log_tail": ["Could not select J-Link with specified S/N (240710115)."],
+            }
+        return {"status": "ok", "summary": "started"}
+
+    session = SimpleNamespace(
+        config=SimpleNamespace(
+            probe=SimpleNamespace(target="STM32F103C8", unique_id="240710115"),
+        ),
+        gdb_server=SimpleNamespace(start_jlink=_start_jlink),
+    )
+
+    result = start_jlink_gdb_server(session)
+
+    assert result["status"] == "ok"
+    assert result["requested_serial_no"] == "240710115"
+    assert len(calls) == 2
+    assert calls[0]["serial_no"] == "240710115"
+    assert calls[1]["serial_no"] is None
+
+
+def test_jlink_status_and_stop_wrap_runtime() -> None:
+    session = SimpleNamespace(
+        gdb_server=SimpleNamespace(
+            status=lambda: {
+                "running": True,
+                "backend": "jlink",
+                "host": "127.0.0.1",
+                "port": 2331,
+            },
+            stop=lambda timeout_seconds=5.0: {
+                "status": "ok",
+                "summary": "stopped",
+                "timeout": timeout_seconds,
+            },
+        )
+    )
+
+    status = get_jlink_gdb_server_status(session)
+    stopped = stop_jlink_gdb_server(session, timeout_seconds=2.0)
+
+    assert status["status"] == "ok"
+    assert status["running"] is True
+    assert stopped["status"] == "ok"
+    assert stopped["timeout"] == 2.0
+
+
+def test_runtime_start_jlink_builds_expected_command(monkeypatch, tmp_path) -> None:
+    started = {}
+
+    class _PopenFake:
+        def __init__(self, command, cwd, stdout, stderr, text):
+            started["command"] = command
+            started["cwd"] = cwd
+            self.returncode = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+
+    monkeypatch.setattr(gdb_server_tools, "_resolve_jlink_gdb_server_path", lambda exe_path=None: exe_path)
+    monkeypatch.setattr("mcudbg.gdb_server.subprocess.Popen", _PopenFake)
+    monkeypatch.setattr("mcudbg.gdb_server.time.sleep", lambda *_args, **_kwargs: None)
+
+    runtime = GdbServerRuntime()
+    exe_path = str(tmp_path / "JLinkGDBServerCL.exe")
+    (tmp_path / "JLinkGDBServerCL.exe").write_text("", encoding="utf-8")
+
+    result = runtime.start_jlink(
+        target="STM32F103C8",
+        serial_no="240710115",
+        port=2331,
+        interface="swd",
+        speed=4000,
+        exe_path=exe_path,
+        cwd=str(tmp_path),
+    )
+
+    assert result["status"] == "ok"
+    assert result["backend"] == "jlink"
+    assert started["command"] == [
+        exe_path,
+        "-device",
+        "STM32F103C8",
+        "-if",
+        "SWD",
+        "-speed",
+        "4000",
+        "-port",
+        "2331",
+        "-noir",
+        "-select",
+        "usb=240710115",
+    ]
