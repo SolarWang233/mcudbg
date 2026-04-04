@@ -60,7 +60,7 @@ Tell the AI what's wrong. It decides what to check.
 
 ### RTOS and RTT
 
-FreeRTOS task listing and per-task context inspection. Segger RTT log scanning and reading.
+FreeRTOS task listing and per-task context inspection. Segger RTT log scanning and reading, including native J-Link RTT reads with RAM-scan fallback.
 
 ### Build and flash
 
@@ -220,7 +220,14 @@ program_flash(0x08010000, [0xAA, 0x55, 0x12, 0x34], verify=True)
 | Board | MCU | Probe | Capabilities verified |
 |-------|-----|-------|----------------------|
 | ATK_PICTURE | STM32L496VETx | ST-Link (pyOCD) | Full: ELF, DWARF, SVD, flash, RTT, RTOS, diagnosis, GDB server |
-| Custom | STM32F103C8 | J-Link | Full: connect, registers, memory, watchpoints, flash erase/program/verify, J-Link GDB server |
+| Custom | STM32F103C8 | J-Link | Full: connect, registers, memory, watchpoints, flash erase/program/verify, J-Link GDB server, RTT |
+
+Recent J-Link RTT validation on `STM32F103C8`:
+
+- Connected with `JLink_x64.dll` auto-discovery
+- Detected RTT control block at `0x20004644`
+- Read live channel 0 text via the J-Link backend:
+  - `vTaskMsgPro alive`
 
 94 automated tests passing.
 
