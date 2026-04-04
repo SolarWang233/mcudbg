@@ -68,7 +68,7 @@ Keil UV4 build and flash integration. Full debug loop: diagnose → fix code →
 
 ### GDB server
 
-Start, stop, and inspect a pyOCD GDB server process from MCP.
+Start, stop, and inspect either a pyOCD or J-Link GDB server process from MCP.
 
 ## Installation
 
@@ -212,7 +212,7 @@ program_flash(0x08010000, [0xAA, 0x55, 0x12, 0x34], verify=True)
 <details>
 <summary>Build, flash, GDB, lifecycle</summary>
 
-`build_project` · `flash_firmware` · `start_gdb_server` · `stop_gdb_server` · `get_gdb_server_status` · `disconnect_all`
+`build_project` · `flash_firmware` · `start_gdb_server` · `stop_gdb_server` · `get_gdb_server_status` · `start_jlink_gdb_server` · `stop_jlink_gdb_server` · `get_jlink_gdb_server_status` · `disconnect_all`
 </details>
 
 ## Tested on real hardware
@@ -220,9 +220,9 @@ program_flash(0x08010000, [0xAA, 0x55, 0x12, 0x34], verify=True)
 | Board | MCU | Probe | Capabilities verified |
 |-------|-----|-------|----------------------|
 | ATK_PICTURE | STM32L496VETx | ST-Link (pyOCD) | Full: ELF, DWARF, SVD, flash, RTT, RTOS, diagnosis, GDB server |
-| Custom | STM32F103C8 | J-Link | Full: connect, registers, memory, watchpoints, flash erase/program/verify |
+| Custom | STM32F103C8 | J-Link | Full: connect, registers, memory, watchpoints, flash erase/program/verify, J-Link GDB server |
 
-89 automated tests passing.
+94 automated tests passing.
 
 ## Architecture
 
@@ -256,6 +256,7 @@ Future modules: `mcudbg-io` (GPIO), `mcudbg-bench` (DMM, PSU, scope, logic analy
 - Build/flash integration currently targets Keil UV4 on Windows
 - RTOS inspection requires FreeRTOS with matching config
 - Advanced DWARF features depend on compiler debug info quality
+- `JLinkGDBServerCL` may reject an explicit serial number on some setups; `mcudbg` falls back to auto-selected J-Link when that happens
 - SVD files are not bundled — provide the file for your target chip
 
 ## Contributing
