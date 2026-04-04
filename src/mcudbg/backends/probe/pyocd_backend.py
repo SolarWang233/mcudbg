@@ -41,6 +41,10 @@ class PyOcdProbeBackend(ProbeBackend):
         self._probe_name = "pyocd"
         self._breakpoints: set[int] = set()
         self._watchpoints: dict[int, tuple[int, Any, str]] = {}
+        self._connect_hints: dict[str, Any] = {}
+
+    def set_connect_hints(self, hints: dict[str, Any]) -> None:
+        self._connect_hints = dict(hints)
 
     def connect(self, target: str, unique_id: str | None = None) -> dict[str, Any]:
         if ConnectHelper is None:
@@ -49,25 +53,51 @@ class PyOcdProbeBackend(ProbeBackend):
         if self._session is not None:
             self.disconnect()
 
-        session = ConnectHelper.session_with_chosen_probe(
-            unique_id=unique_id,
-            target_override=target,
-            frequency=4000000,
-            blocking=False,
-            connect_mode="attach",
+        attempted_configs: list[dict[str, Any]] = []
+        last_error: Exception | None = None
+        attempts = self._connect_hints.get(
+            "attempts",
+            [
+                {"frequency": 4000000, "connect_mode": "attach"},
+                {"frequency": 1000000, "connect_mode": "attach"},
+                {"frequency": 1000000, "connect_mode": "under-reset"},
+            ],
         )
-        if session is None:
-            raise BackendUnavailableError("no supported pyOCD probe could be opened")
 
-        session.open()
-        self._session = session
-        self._target = session.target
-        return {
-            "status": "ok",
-            "summary": f"Connected to target {target} via pyOCD probe backend.",
-            "backend": self._probe_name,
-            "target": target,
-        }
+        for attempt in attempts:
+            attempted_configs.append(dict(attempt))
+            try:
+                session = ConnectHelper.session_with_chosen_probe(
+                    unique_id=unique_id,
+                    target_override=target,
+                    frequency=attempt["frequency"],
+                    blocking=False,
+                    connect_mode=attempt["connect_mode"],
+                )
+                if session is None:
+                    continue
+                session.open()
+                self._session = session
+                self._target = session.target
+                return {
+                    "status": "ok",
+                    "summary": f"Connected to target {target} via pyOCD probe backend.",
+                    "backend": self._probe_name,
+                    "target": target,
+                    "frequency_hz": attempt["frequency"],
+                    "connect_mode": attempt["connect_mode"],
+                    "attempted_configs": attempted_configs,
+                }
+            except Exception as exc:
+                last_error = exc
+
+        if last_error is not None:
+            raise BackendUnavailableError(
+                f"no supported pyOCD probe could be opened for target {target}; attempts={attempted_configs}; last_error={last_error}"
+            )
+        raise BackendUnavailableError(
+            f"no supported pyOCD probe could be opened for target {target}; attempts={attempted_configs}"
+        )
 
     def disconnect(self) -> dict[str, Any]:
         if self._session is not None:

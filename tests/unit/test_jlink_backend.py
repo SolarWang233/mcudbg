@@ -20,6 +20,7 @@ class _FakeJLink:
         self.closed = False
         self.breakpoints: list[int] = []
         self._halted = True
+        self.go_calls = 0
 
     def open(self, serial_no=None) -> None:
         self.open_calls.append(serial_no)
@@ -27,8 +28,13 @@ class _FakeJLink:
     def set_tif(self, interface) -> None:
         self.interface = interface
 
-    def connect(self, target: str) -> None:
+    def connect(self, target: str, speed='auto') -> None:
+        if hasattr(self, "connect_failures") and self.connect_failures:
+            next_error = self.connect_failures.pop(0)
+            if next_error is not None:
+                raise RuntimeError(next_error)
         self.connected_target = target
+        self.connected_speed = speed
 
     def close(self) -> None:
         self.closed = True
@@ -37,6 +43,10 @@ class _FakeJLink:
         self._halted = True
 
     def restart(self) -> None:
+        self._halted = False
+
+    def go(self) -> None:
+        self.go_calls += 1
         self._halted = False
 
     def reset(self, halt: bool = False) -> None:
@@ -52,6 +62,8 @@ class _FakeJLink:
         self.breakpoints.clear()
 
     def halted(self) -> bool:
+        if hasattr(self, "halted_sequence") and self.halted_sequence:
+            self._halted = self.halted_sequence.pop(0)
         return self._halted
 
     def register_read(self, name: str) -> int:
@@ -179,8 +191,26 @@ def test_jlink_backend_connects_and_reads_memory(monkeypatch) -> None:
     assert result["status"] == "ok"
     assert fake.open_calls == [123456]
     assert fake.connected_target == "stm32l496vetx"
+    assert result["speed_khz"] == 4000
+    assert result["attempted_speeds"] == [4000]
     assert backend.read_memory(0x20000000, 4) == b"\x00\x01\x02\x03"
     assert result["dll_path"] == "E:/software/jlink/JLink_x64.dll"
+
+
+def test_jlink_backend_retries_lower_speeds(monkeypatch) -> None:
+    fake = _FakeJLink()
+    fake.connect_failures = ["4000 failed", "1000 failed", None]
+    fake_module = _fake_pylink_module(fake)
+    monkeypatch.setattr(jlink_backend, "pylink", fake_module)
+    monkeypatch.setattr(jlink_backend, "pylink_library", _fake_library_module())
+    monkeypatch.setattr(jlink_backend.JLinkProbeBackend, "_resolve_dll_path", classmethod(lambda cls, dll_path=None: dll_path or "E:/software/jlink/JLink_x64.dll"))
+
+    backend = jlink_backend.JLinkProbeBackend(dll_path="E:/software/jlink/JLink_x64.dll")
+    result = backend.connect(target="STM32F103C8")
+
+    assert result["status"] == "ok"
+    assert result["speed_khz"] == 400
+    assert result["attempted_speeds"] == [4000, 1000, 400]
 
 
 def test_jlink_backend_enumerates_connected_emulators(monkeypatch) -> None:
@@ -345,6 +375,39 @@ def test_jlink_continue_target_halts_before_reading_pc_on_timeout(monkeypatch) -
     assert result["stop_reason"] == "timeout"
     assert result["pc"] == hex(0x08001234)
     assert fake.halted() is True
+
+
+def test_jlink_resume_prefers_go_when_available(monkeypatch) -> None:
+    backend, fake = _make_connected_backend(monkeypatch)
+
+    result = backend.resume()
+
+    assert result["status"] == "ok"
+    assert result["state"] == "running"
+    assert fake.go_calls == 1
+
+
+def test_jlink_continue_target_marks_breakpoint_hit(monkeypatch) -> None:
+    backend, fake = _make_connected_backend(monkeypatch)
+    backend.set_breakpoint(0x08001234)
+    fake.halted_sequence = [False, True]
+
+    result = backend.continue_target(timeout_seconds=0.01, poll_interval_seconds=0.0)
+
+    assert result["status"] == "ok"
+    assert result["stop_reason"] == "breakpoint_hit"
+    assert result["state"] == "halted"
+
+
+def test_jlink_continue_target_marks_manual_halt_without_breakpoint(monkeypatch) -> None:
+    backend, fake = _make_connected_backend(monkeypatch)
+    fake.halted_sequence = [False, True]
+
+    result = backend.continue_target(timeout_seconds=0.01, poll_interval_seconds=0.0)
+
+    assert result["status"] == "ok"
+    assert result["stop_reason"] == "manual_halt"
+    assert result["state"] == "halted"
 
 
 def test_jlink_read_rtt_log(monkeypatch) -> None:

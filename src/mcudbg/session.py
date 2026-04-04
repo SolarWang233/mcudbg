@@ -21,6 +21,9 @@ class ProbeBackend(Protocol):
     def connect(self, target: str, unique_id: str | None = None) -> dict[str, Any]:
         ...
 
+    def set_connect_hints(self, hints: dict[str, Any]) -> None:
+        ...
+
     def disconnect(self) -> dict[str, Any]:
         ...
 
@@ -85,6 +88,18 @@ class ProbeBackend(Protocol):
         ...
 
     def read_rtt_log(self, channel: int = 0, max_bytes: int = 4096) -> dict[str, Any]:
+        ...
+
+    def read_cycle_counter(self) -> dict[str, Any]:
+        ...
+
+    def read_swo_log(
+        self,
+        cpu_speed_hz: int,
+        swo_speed_hz: int,
+        max_bytes: int = 1024,
+        port_mask: int = 0x01,
+    ) -> dict[str, Any]:
         ...
 
 

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from ..chip_matcher import match_chip_name as _match_chip_name
 from ..config import RuntimeConfig, get_builtin_profiles
+from ..device_patch_manager import list_supported_targets as _list_supported_targets
+from ..device_patch_manager import resolve_device_patch as _resolve_device_patch
 from ..session import SessionState, create_probe_backend
 
 
@@ -72,17 +75,41 @@ def configure_probe(
                 "summary": str(exc),
             }
         session.config.probe.backend = next_backend
+    matched_target = None
     if target is not None:
-        session.config.probe.target = target
+        match_result = _match_chip_name(target, backend=next_backend)
+        matched_target = match_result["matched_target"]
+        session.config.probe.target = matched_target
+        patch_result = _resolve_device_patch(target, backend=next_backend)
+        if hasattr(session.probe, "set_connect_hints"):
+            session.probe.set_connect_hints(patch_result["connect_hints"])
     if unique_id is not None:
         session.config.probe.unique_id = unique_id
     if jlink_dll_path is not None:
         session.config.probe.jlink_dll_path = jlink_dll_path
-    return {
+    result = {
         "status": "ok",
         "summary": "Updated probe configuration.",
         "probe": session.config.probe.model_dump(),
     }
+    if target is not None:
+        result["target_match"] = match_result
+        result["target_patch"] = patch_result
+        if matched_target != target:
+            result["summary"] = f"Updated probe configuration. Matched target '{target}' to '{matched_target}'."
+    return result
+
+
+def match_chip_name(target: str, backend: str = "pyocd") -> dict:
+    return _match_chip_name(target, backend=backend)
+
+
+def get_target_info(target: str, backend: str = "pyocd") -> dict:
+    return _resolve_device_patch(target, backend=backend)
+
+
+def list_supported_targets(backend: str | None = None) -> dict:
+    return _list_supported_targets(backend=backend)
 
 
 def configure_log(

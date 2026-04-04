@@ -8,6 +8,9 @@ from .tools.build import flash_firmware as _flash_firmware
 from .tools.configuration import configure_build as _configure_build
 from .tools.configuration import configure_elf as _configure_elf
 from .tools.configuration import configure_log as _configure_log
+from .tools.configuration import get_target_info as _get_target_info
+from .tools.configuration import list_supported_targets as _list_supported_targets
+from .tools.configuration import match_chip_name as _match_chip_name
 from .tools.configuration import configure_probe as _configure_probe
 from .tools.configuration import connect_with_config as _connect_with_config
 from .tools.configuration import get_runtime_config as _get_runtime_config
@@ -64,6 +67,8 @@ from .tools.probe import memory_snapshot as _memory_snapshot
 from .tools.probe import memory_diff as _memory_diff
 from .tools.probe import read_memory as _read_memory
 from .tools.probe import read_fpu_registers as _read_fpu_registers
+from .tools.probe import read_cycle_counter as _read_cycle_counter
+from .tools.probe import read_swo_log as _read_swo_log
 from .tools.probe import read_mpu_regions as _read_mpu_regions
 from .tools.probe import read_registers as _read_registers
 from .tools.probe import read_symbol_value as _read_symbol_value
@@ -112,6 +117,24 @@ async def list_demo_profiles() -> dict:
 @mcp.tool()
 async def load_demo_profile(profile_name: str) -> dict:
     return _load_demo_profile(session, profile_name=profile_name)
+
+
+@mcp.tool()
+async def match_chip_name(target: str, backend: str = "pyocd") -> dict:
+    """Resolve a chip alias to a backend-specific target name."""
+    return _match_chip_name(target=target, backend=backend)
+
+
+@mcp.tool()
+async def get_target_info(target: str, backend: str = "pyocd") -> dict:
+    """Return alias-match and device-patch info for a target on a given backend."""
+    return _get_target_info(target=target, backend=backend)
+
+
+@mcp.tool()
+async def list_supported_targets(backend: str | None = None) -> dict:
+    """List built-in target profiles and validation metadata for a backend."""
+    return _list_supported_targets(backend=backend)
 
 
 @mcp.tool()
@@ -932,6 +955,40 @@ async def probe_read_registers() -> dict:
 @mcp.tool()
 async def probe_read_fpu_registers() -> dict:
     return _read_fpu_registers(session)
+
+
+@mcp.tool()
+async def read_cycle_counter() -> dict:
+    """Read the DWT cycle counter when supported by the active probe backend.
+
+    Useful for lightweight execution progress and timing checks.
+    Requires probe connected.
+    """
+    return _read_cycle_counter(session)
+
+
+@mcp.tool()
+async def read_swo_log(
+    cpu_speed_hz: int,
+    swo_speed_hz: int,
+    max_bytes: int = 1024,
+    port_mask: int = 0x01,
+) -> dict:
+    """Read bytes from the J-Link SWO host buffer when supported by the active probe backend.
+
+    cpu_speed_hz: target CPU clock in Hz
+    swo_speed_hz: SWO bitrate in Hz
+    max_bytes: maximum bytes to return
+    port_mask: ITM stimulus port mask used when enabling SWO
+    Requires probe connected.
+    """
+    return _read_swo_log(
+        session,
+        cpu_speed_hz=cpu_speed_hz,
+        swo_speed_hz=swo_speed_hz,
+        max_bytes=max_bytes,
+        port_mask=port_mask,
+    )
 
 
 @mcp.tool()

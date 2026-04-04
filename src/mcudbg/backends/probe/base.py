@@ -111,3 +111,15 @@ class ProbeBackend(ABC):
 
     def read_rtt_log(self, channel: int = 0, max_bytes: int = 4096) -> dict[str, Any]:
         raise NotImplementedError
+
+    def read_cycle_counter(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def read_swo_log(
+        self,
+        cpu_speed_hz: int,
+        swo_speed_hz: int,
+        max_bytes: int = 1024,
+        port_mask: int = 0x01,
+    ) -> dict[str, Any]:
+        raise NotImplementedError

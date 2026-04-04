@@ -20,6 +20,12 @@ except ImportError:  # pragma: no cover
 class JLinkProbeBackend(ProbeBackend):
     """Minimal J-Link probe backend built on top of pylink-square."""
 
+    _DEMCR = 0xE000EDFC
+    _DWT_CTRL = 0xE0001000
+    _DWT_CYCCNT = 0xE0001004
+    _DEMCR_TRCENA = 1 << 24
+    _DWT_CTRL_CYCCNTENA = 1 << 0
+
     _REGISTER_ALIASES = {
         "pc": "R15 (PC)",
         "sp": "R13 (SP)",
@@ -33,8 +39,13 @@ class JLinkProbeBackend(ProbeBackend):
         self._jlink = None
         self._connected = False
         self._target = None
+        self._breakpoints: set[int] = set()
         self._watchpoints: dict[int, tuple[int, int, str]] = {}  # addr -> (size, handle, watch_type)
         self._rtt_started = False
+        self._connect_hints: dict[str, Any] = {}
+
+    def set_connect_hints(self, hints: dict[str, Any]) -> None:
+        self._connect_hints = dict(hints)
 
     @classmethod
     def enumerate_probes(cls) -> list[dict[str, Any]]:
@@ -69,6 +80,8 @@ class JLinkProbeBackend(ProbeBackend):
 
     def connect(self, target: str, unique_id: str | None = None) -> dict[str, Any]:
         self._require_library()
+        if self._jlink is not None:
+            self.disconnect()
         jlink = pylink.JLink(lib=self._get_library())
         if unique_id:
             jlink.open(serial_no=int(unique_id))
@@ -76,18 +89,36 @@ class JLinkProbeBackend(ProbeBackend):
             jlink.open()
 
         jlink.set_tif(pylink.enums.JLinkInterfaces.SWD)
-        jlink.connect(target)
-        self._jlink = jlink
-        self._connected = True
-        self._target = target
-        return {
-            "status": "ok",
-            "summary": f"Connected to J-Link target {target}.",
-            "backend": "jlink",
-            "target": target,
-            "unique_id": unique_id,
-            "dll_path": self._dll_path,
-        }
+        attempted_speeds: list[int | str] = []
+        last_error: Exception | None = None
+        speeds = self._connect_hints.get("speeds", [4000, 1000, 400, "auto"])
+        for speed in speeds:
+            attempted_speeds.append(speed)
+            try:
+                jlink.connect(target, speed=speed)
+                self._jlink = jlink
+                self._connected = True
+                self._target = target
+                return {
+                    "status": "ok",
+                    "summary": f"Connected to J-Link target {target}.",
+                    "backend": "jlink",
+                    "target": target,
+                    "unique_id": unique_id,
+                    "dll_path": self._dll_path,
+                    "speed_khz": speed,
+                    "attempted_speeds": attempted_speeds,
+                }
+            except Exception as exc:
+                last_error = exc
+
+        try:
+            jlink.close()
+        except Exception:
+            pass
+        raise BackendUnavailableError(
+            f"J-Link connect failed for target {target} after speeds {attempted_speeds}: {last_error}"
+        )
 
     def disconnect(self) -> dict[str, Any]:
         if self._jlink is not None:
@@ -101,6 +132,7 @@ class JLinkProbeBackend(ProbeBackend):
             finally:
                 self._jlink = None
                 self._connected = False
+                self._breakpoints.clear()
                 self._watchpoints.clear()
                 self._rtt_started = False
         return {"status": "ok", "summary": "Disconnected J-Link probe."}
@@ -112,8 +144,8 @@ class JLinkProbeBackend(ProbeBackend):
 
     def resume(self) -> dict[str, Any]:
         self._require_connected()
-        self._jlink.restart()
-        return {"status": "ok", "summary": "Target resumed."}
+        self._run_target()
+        return {"status": "ok", "summary": "Target resumed.", "state": self.get_state()}
 
     def reset(self, halt: bool = False) -> dict[str, Any]:
         self._require_connected()
@@ -121,24 +153,41 @@ class JLinkProbeBackend(ProbeBackend):
         return {
             "status": "ok",
             "summary": f"Target reset ({'halt' if halt else 'run'}).",
+            "state": self.get_state(),
         }
 
     def set_breakpoint(self, address: int) -> dict[str, Any]:
         self._require_connected()
         normalized = address & ~1
         self._jlink.breakpoint_set(normalized)
-        return {"status": "ok", "summary": f"Breakpoint set at {hex(normalized)}."}
+        self._breakpoints.add(normalized)
+        return {
+            "status": "ok",
+            "summary": f"Breakpoint set at {hex(normalized)}.",
+            "address": hex(normalized),
+        }
 
     def clear_breakpoint(self, address: int) -> dict[str, Any]:
         self._require_connected()
         normalized = address & ~1
         self._jlink.breakpoint_clear(normalized)
-        return {"status": "ok", "summary": f"Breakpoint cleared at {hex(normalized)}."}
+        self._breakpoints.discard(normalized)
+        return {
+            "status": "ok",
+            "summary": f"Breakpoint cleared at {hex(normalized)}.",
+            "address": hex(normalized),
+        }
 
     def clear_all_breakpoints(self) -> dict[str, Any]:
         self._require_connected()
         self._jlink.breakpoint_clear_all()
-        return {"status": "ok", "summary": "Cleared all breakpoints."}
+        cleared = len(self._breakpoints)
+        self._breakpoints.clear()
+        return {
+            "status": "ok",
+            "summary": f"Cleared {cleared} breakpoint(s).",
+            "cleared_count": cleared,
+        }
 
     def continue_target(
         self,
@@ -146,7 +195,7 @@ class JLinkProbeBackend(ProbeBackend):
         poll_interval_seconds: float = 0.05,
     ) -> dict[str, Any]:
         self._require_connected()
-        self._jlink.restart()
+        self._run_target()
 
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
@@ -154,9 +203,10 @@ class JLinkProbeBackend(ProbeBackend):
                 pc = self._read_register("pc")
                 return {
                     "status": "ok",
-                    "summary": f"Target halted at {hex(pc)}.",
+                    "summary": "Target stopped after continue.",
                     "pc": hex(pc),
-                    "stop_reason": "breakpoint_hit",
+                    "stop_reason": self._infer_stop_reason(pc),
+                    "state": self.get_state(),
                 }
             time.sleep(poll_interval_seconds)
 
@@ -169,6 +219,7 @@ class JLinkProbeBackend(ProbeBackend):
             "summary": f"Timeout expired; target was halted at {hex(pc)} for inspection.",
             "pc": hex(pc),
             "stop_reason": "timeout",
+            "state": self.get_state(),
         }
 
     def get_state(self) -> str:
@@ -212,7 +263,12 @@ class JLinkProbeBackend(ProbeBackend):
         self._require_connected()
         self._jlink.step()
         pc = self._read_register("pc")
-        return {"status": "ok", "summary": f"Stepped to {hex(pc)}.", "pc": hex(pc)}
+        return {
+            "status": "ok",
+            "summary": "Executed one instruction.",
+            "pc": hex(pc),
+            "state": self.get_state(),
+        }
 
     # -- Watchpoints --
 
@@ -423,6 +479,72 @@ class JLinkProbeBackend(ProbeBackend):
         except Exception as e:
             return {"status": "error", "summary": str(e)}
 
+    def read_cycle_counter(self) -> dict[str, Any]:
+        self._require_connected()
+        try:
+            demcr = self._jlink.memory_read32(self._DEMCR, 1)[0]
+            dwt_ctrl = self._jlink.memory_read32(self._DWT_CTRL, 1)[0]
+
+            if (demcr & self._DEMCR_TRCENA) == 0:
+                demcr |= self._DEMCR_TRCENA
+                self._jlink.memory_write32(self._DEMCR, [demcr])
+            if (dwt_ctrl & self._DWT_CTRL_CYCCNTENA) == 0:
+                dwt_ctrl |= self._DWT_CTRL_CYCCNTENA
+                self._jlink.memory_write32(self._DWT_CTRL, [dwt_ctrl])
+
+            cyccnt = self._jlink.memory_read32(self._DWT_CYCCNT, 1)[0]
+            dwt_ctrl_after = self._jlink.memory_read32(self._DWT_CTRL, 1)[0]
+            return {
+                "status": "ok",
+                "summary": "Read DWT cycle counter.",
+                "backend": "jlink",
+                "cyccnt": int(cyccnt),
+                "cyccnt_hex": hex(int(cyccnt)),
+                "dwt_enabled": bool(dwt_ctrl_after & self._DWT_CTRL_CYCCNTENA),
+            }
+        except Exception as e:
+            return {"status": "error", "summary": str(e)}
+
+    def read_swo_log(
+        self,
+        cpu_speed_hz: int,
+        swo_speed_hz: int,
+        max_bytes: int = 1024,
+        port_mask: int = 0x01,
+    ) -> dict[str, Any]:
+        self._require_connected()
+        try:
+            if cpu_speed_hz <= 0:
+                raise ValueError("cpu_speed_hz must be greater than 0.")
+            if swo_speed_hz <= 0:
+                raise ValueError("swo_speed_hz must be greater than 0.")
+            if max_bytes <= 0:
+                raise ValueError("max_bytes must be greater than 0.")
+
+            if not self._jlink.swo_enabled():
+                self._jlink.swo_enable(cpu_speed_hz, swo_speed_hz, port_mask=port_mask)
+
+            available = int(self._jlink.swo_num_bytes())
+            to_read = min(max_bytes, max(available, 0))
+            raw = (
+                bytes(self._jlink.swo_read_stimulus(0, to_read))
+                if to_read > 0
+                else b""
+            )
+            return {
+                "status": "ok",
+                "summary": f"Read {len(raw)} byte(s) from SWO.",
+                "backend": "jlink",
+                "cpu_speed_hz": cpu_speed_hz,
+                "swo_speed_hz": swo_speed_hz,
+                "port_mask": port_mask,
+                "bytes_available": available,
+                "bytes_read": len(raw),
+                "text": raw.decode("utf-8", errors="replace"),
+            }
+        except Exception as e:
+            return {"status": "error", "summary": str(e)}
+
     # -- Helpers --
 
     @classmethod
@@ -485,6 +607,26 @@ class JLinkProbeBackend(ProbeBackend):
     def _read_register(self, name: str) -> int:
         register_name = self._REGISTER_ALIASES.get(name.lower(), name)
         return self._jlink.register_read(register_name)
+
+    def _run_target(self) -> None:
+        if hasattr(self._jlink, "go"):
+            self._jlink.go()
+        else:
+            self._jlink.restart()
+
+    def _infer_stop_reason(self, pc: int) -> str:
+        if self._matches_breakpoint(pc):
+            return "breakpoint_hit"
+        return "manual_halt"
+
+    def _matches_breakpoint(self, pc: int) -> bool:
+        if pc in self._breakpoints:
+            return True
+        if (pc - 2) in self._breakpoints:
+            return True
+        if (pc - 4) in self._breakpoints:
+            return True
+        return False
 
     def _require_library(self) -> None:
         if pylink is None or pylink_library is None:

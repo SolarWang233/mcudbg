@@ -3,6 +3,8 @@ from __future__ import annotations
 import operator as _op
 import time
 
+from ..chip_matcher import match_chip_name as _match_chip_name
+from ..device_patch_manager import resolve_device_patch as _resolve_device_patch
 from ..session import SessionState
 
 _OPS = {
@@ -27,7 +29,32 @@ def list_connected_probes(session: SessionState) -> dict:
 
 
 def connect_probe(session: SessionState, target: str, unique_id: str | None = None) -> dict:
-    return session.probe.connect(target=target, unique_id=unique_id)
+    match_result = _match_chip_name(target, backend=session.config.probe.backend)
+    patch_result = _resolve_device_patch(target, backend=session.config.probe.backend)
+    if hasattr(session.probe, "set_connect_hints"):
+        session.probe.set_connect_hints(patch_result["connect_hints"])
+    result = session.probe.connect(target=match_result["matched_target"], unique_id=unique_id)
+    if result.get("status") == "ok":
+        result["target_match"] = match_result
+        result["target_patch"] = patch_result
+        checks = patch_result.get("post_connect_checks", {})
+        if checks:
+            post_connect: dict[str, object] = {"checks_requested": checks}
+            if checks.get("halt"):
+                post_connect["halt"] = session.probe.halt()
+            if checks.get("read_state"):
+                post_connect["state"] = session.probe.get_state()
+            if checks.get("read_core_registers"):
+                try:
+                    post_connect["core_registers"] = session.probe.read_core_registers()
+                except Exception as exc:
+                    post_connect["core_registers_error"] = str(exc)
+            result["post_connect"] = post_connect
+        if match_result["matched_target"] != target:
+            result["summary"] = (
+                result["summary"] + f" Matched target '{target}' to '{match_result['matched_target']}'."
+            )
+    return result
 
 
 def disconnect_probe(session: SessionState) -> dict:
@@ -1366,6 +1393,57 @@ def read_fpu_registers(session: SessionState) -> dict:
             for name, value in values.items()
         },
     }
+
+
+def read_cycle_counter(session: SessionState) -> dict:
+    if not hasattr(session.probe, "read_cycle_counter"):
+        return {
+            "status": "error",
+            "summary": "Active probe backend does not support DWT cycle counter reads.",
+        }
+    try:
+        return session.probe.read_cycle_counter()
+    except NotImplementedError:
+        return {
+            "status": "error",
+            "summary": "Active probe backend does not support DWT cycle counter reads.",
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "summary": str(e),
+        }
+
+
+def read_swo_log(
+    session: SessionState,
+    cpu_speed_hz: int,
+    swo_speed_hz: int,
+    max_bytes: int = 1024,
+    port_mask: int = 0x01,
+) -> dict:
+    if not hasattr(session.probe, "read_swo_log"):
+        return {
+            "status": "error",
+            "summary": "Active probe backend does not support SWO log reads.",
+        }
+    try:
+        return session.probe.read_swo_log(
+            cpu_speed_hz=cpu_speed_hz,
+            swo_speed_hz=swo_speed_hz,
+            max_bytes=max_bytes,
+            port_mask=port_mask,
+        )
+    except NotImplementedError:
+        return {
+            "status": "error",
+            "summary": "Active probe backend does not support SWO log reads.",
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "summary": str(e),
+        }
 
 
 _MPU_TYPE = 0xE000ED90
