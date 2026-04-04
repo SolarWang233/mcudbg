@@ -36,6 +36,9 @@ mcudbg = "mcudbg.server:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/mcudbg"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests/unit", "tests/integration"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
