@@ -119,6 +119,7 @@ pip install -e .
 - [AI Playbook](docs/ai-playbook.md) - operational guidance for AI assistants using `mcudbg`
 - [v0.6 Roadmap](docs/v0.6-roadmap.md) - current post-core roadmap and remaining high-value gaps
 - [Support Matrix](docs/support-matrix.md) - backend, target, and hardware-validated capability coverage
+- [Board Validation Guide](docs/board-validation-guide.md) - how to validate probe, RTT, RTOS, flash, and source-level debug on real hardware
 
 ## MCP configuration
 
