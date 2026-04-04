@@ -203,6 +203,7 @@ class SessionState:
     gdb_server: GdbServerRuntime = field(default_factory=GdbServerRuntime)
     config: RuntimeConfig = field(default_factory=RuntimeConfig)
     memory_snapshots: dict[str, dict[str, Any]] = field(default_factory=dict)
+    conditional_breakpoints: dict[int, dict[str, Any]] = field(default_factory=dict)
 
 
 def create_default_session() -> SessionState:

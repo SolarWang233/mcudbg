@@ -97,6 +97,10 @@ class MockProbeBackend:
             "lr": 0x08004567,
             "sp": 0x20001F80,
             "xpsr": 0x21000000,
+            "r0": 0,
+            "r1": 0,
+            "r2": 0,
+            "r3": 0,
         }
 
     def read_fault_registers(self) -> dict[str, int]:

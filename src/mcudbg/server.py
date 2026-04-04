@@ -93,6 +93,7 @@ from .tools.probe import program_flash as _program_flash
 from .tools.probe import verify_flash as _verify_flash
 from .tools.probe import write_memory as _write_memory
 from .tools.probe import write_symbol_value as _write_symbol_value
+from .tools.probe import list_conditional_breakpoints as _list_conditional_breakpoints
 
 mcp = FastMCP("mcudbg")
 session = SessionState()
@@ -308,8 +309,35 @@ async def probe_reset(halt: bool = False) -> dict:
 
 
 @mcp.tool()
-async def set_breakpoint(symbol: str | None = None, address: int | None = None) -> dict:
-    return _set_breakpoint(session, symbol=symbol, address=address)
+async def set_breakpoint(
+    symbol: str | None = None,
+    address: int | None = None,
+    condition_symbol: str | None = None,
+    condition_register: str | None = None,
+    condition_op: str = "eq",
+    condition_value: int = 0,
+) -> dict:
+    """Set a breakpoint, optionally with a condition.
+
+    If condition_symbol or condition_register is given, continue_target will
+    automatically skip this breakpoint (resume) whenever the condition is not met.
+    condition_op: eq | ne | lt | gt | le | ge
+    """
+    return _set_breakpoint(
+        session,
+        symbol=symbol,
+        address=address,
+        condition_symbol=condition_symbol,
+        condition_register=condition_register,
+        condition_op=condition_op,
+        condition_value=condition_value,
+    )
+
+
+@mcp.tool()
+async def list_conditional_breakpoints() -> dict:
+    """List all registered conditional breakpoints in the current session."""
+    return _list_conditional_breakpoints(session)
 
 
 @mcp.tool()
@@ -333,11 +361,21 @@ async def clear_all_breakpoints() -> dict:
 
 
 @mcp.tool()
-async def continue_target(timeout_seconds: float = 5.0, poll_interval_ms: int = 50) -> dict:
+async def continue_target(
+    timeout_seconds: float = 5.0,
+    poll_interval_ms: int = 50,
+    max_condition_loops: int = 1000,
+) -> dict:
+    """Resume target execution.
+
+    max_condition_loops: max number of conditional breakpoint skips before giving up.
+    Lower this (e.g. 10) for high-frequency breakpoints where you want an early abort.
+    """
     return _continue_target(
         session,
         timeout_seconds=timeout_seconds,
         poll_interval_ms=poll_interval_ms,
+        max_condition_loops=max_condition_loops,
     )
 
 

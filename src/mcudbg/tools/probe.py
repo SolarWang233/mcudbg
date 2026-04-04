@@ -5,6 +5,15 @@ import time
 
 from ..session import SessionState
 
+_OPS = {
+    "eq": _op.eq,
+    "ne": _op.ne,
+    "lt": _op.lt,
+    "gt": _op.gt,
+    "le": _op.le,
+    "ge": _op.ge,
+}
+
 
 def list_connected_probes(session: SessionState) -> dict:
     probes = session.probe.enumerate_probes()
@@ -41,7 +50,16 @@ def set_breakpoint(
     session: SessionState,
     symbol: str | None = None,
     address: int | None = None,
+    condition_symbol: str | None = None,
+    condition_register: str | None = None,
+    condition_op: str = "eq",
+    condition_value: int = 0,
 ) -> dict:
+    if (condition_symbol or condition_register) and condition_op not in _OPS:
+        return {
+            "status": "error",
+            "summary": f"Invalid condition_op '{condition_op}'. Use one of: {', '.join(sorted(_OPS))}.",
+        }
     resolved_symbol = None
     resolved_address = _resolve_breakpoint_address(session, symbol=symbol, address=address)
     if symbol and session.elf.is_loaded:
@@ -52,8 +70,27 @@ def set_breakpoint(
         "symbol": resolved_symbol,
         "address": hex(resolved_address),
     }
-    if resolved_symbol:
+
+    if condition_symbol or condition_register:
+        cond: dict = {
+            "symbol": resolved_symbol,
+            "address": hex(resolved_address),
+            "condition_symbol": condition_symbol,
+            "condition_register": condition_register,
+            "condition_op": condition_op,
+            "condition_value": condition_value,
+        }
+        session.conditional_breakpoints[resolved_address] = cond
+        result["conditional"] = True
+        result["condition"] = cond
+        cond_target = f"symbol {condition_symbol}" if condition_symbol else f"register {condition_register}"
+        result["summary"] = (
+            f"Conditional breakpoint set at {resolved_symbol or hex(resolved_address)}: "
+            f"{cond_target} {condition_op} {hex(condition_value)}."
+        )
+    elif resolved_symbol:
         result["summary"] = f"Breakpoint set at {resolved_symbol}."
+
     return result
 
 
@@ -68,30 +105,82 @@ def clear_breakpoint(
         "symbol": symbol,
         "address": hex(resolved_address),
     }
+    session.conditional_breakpoints.pop(resolved_address, None)
     if symbol:
         result["summary"] = f"Breakpoint cleared at {symbol}."
     return result
 
 
 def clear_all_breakpoints(session: SessionState) -> dict:
+    if hasattr(session, "conditional_breakpoints"):
+        session.conditional_breakpoints.clear()
     return session.probe.clear_all_breakpoints()
+
+
+def list_conditional_breakpoints(session: SessionState) -> dict:
+    entries = list(session.conditional_breakpoints.values())
+    return {
+        "status": "ok",
+        "summary": f"{len(entries)} conditional breakpoint(s) registered.",
+        "conditional_breakpoints": entries,
+    }
 
 
 def continue_target(
     session: SessionState,
     timeout_seconds: float = 5.0,
     poll_interval_ms: int = 50,
+    max_condition_loops: int = 1000,
 ) -> dict:
-    result = session.probe.continue_target(
-        timeout_seconds=timeout_seconds,
-        poll_interval_seconds=max(poll_interval_ms, 1) / 1000.0,
-    )
-    pc_hex = result.get("pc")
-    if pc_hex and session.elf.is_loaded:
-        resolved = session.elf.resolve_address(int(pc_hex, 16))
-        result["symbol"] = resolved["symbol"]
-        result["source"] = resolved["source"]
+    for loop in range(max_condition_loops):
+        result = session.probe.continue_target(
+            timeout_seconds=timeout_seconds,
+            poll_interval_seconds=max(poll_interval_ms, 1) / 1000.0,
+        )
+        pc_hex = result.get("pc")
+        if pc_hex and session.elf.is_loaded:
+            resolved = session.elf.resolve_address(int(pc_hex, 16))
+            result["symbol"] = resolved["symbol"]
+            result["source"] = resolved["source"]
+
+        if pc_hex and getattr(session, "conditional_breakpoints", None):
+            pc = int(pc_hex, 16) & ~1
+            cond = session.conditional_breakpoints.get(pc)
+            if cond and not _evaluate_condition(session, cond):
+                result["_condition_skipped"] = True
+                continue
+
+        if loop > 0:
+            result["condition_skip_count"] = loop
+        return result
+
+    result["summary"] = f"Stopped after {max_condition_loops} conditional breakpoint skips."
+    result["condition_skip_limit_reached"] = True
     return result
+
+
+def _evaluate_condition(session: SessionState, cond: dict) -> bool:
+    op_fn = _OPS.get(cond["condition_op"], _op.eq)
+    expected = cond["condition_value"]
+
+    if cond.get("condition_symbol"):
+        if not session.elf.is_loaded:
+            return True  # Can't evaluate — don't skip
+        resolved = session.elf.resolve_symbol(cond["condition_symbol"])
+        if resolved.get("address") is None:
+            return True
+        raw = session.probe.read_memory(int(resolved["address"], 16), 4)
+        observed = int.from_bytes(raw, "little")
+    elif cond.get("condition_register"):
+        registers = session.probe.read_core_registers()
+        reg = cond["condition_register"]
+        if reg not in registers:
+            return True  # Unknown register — don't skip
+        observed = int(registers[reg])
+    else:
+        return True  # No condition spec — always halt
+
+    return op_fn(observed, expected)
 
 
 def read_stopped_context(
@@ -1344,16 +1433,6 @@ def read_mpu_regions(session: SessionState) -> dict:
     }
 
 
-_OPS = {
-    "eq": _op.eq,
-    "ne": _op.ne,
-    "lt": _op.lt,
-    "gt": _op.gt,
-    "le": _op.le,
-    "ge": _op.ge,
-}
-
-
 def continue_until(
     session: SessionState,
     address: int,
@@ -1376,15 +1455,20 @@ def continue_until(
         }
 
     target_address = int(address) & ~1
-    condition_fn = _OPS[condition_op]
-    set_breakpoint(session, address=target_address)
+    _cond = {
+        "condition_symbol": condition_symbol,
+        "condition_register": condition_register,
+        "condition_op": condition_op,
+        "condition_value": condition_value,
+    }
+    has_condition = condition_symbol is not None or condition_register is not None
+    session.probe.set_breakpoint(target_address)
 
     try:
         for hit_count in range(1, max_hits + 1):
-            result = continue_target(
-                session,
+            result = session.probe.continue_target(
                 timeout_seconds=timeout_seconds,
-                poll_interval_ms=50,
+                poll_interval_seconds=0.05,
             )
             if result.get("stop_reason") == "timeout":
                 session.probe.clear_breakpoint(target_address)
@@ -1399,26 +1483,7 @@ def continue_until(
             if pc not in {target_address, target_address + 2, target_address + 4}:
                 continue
 
-            observed_value = condition_value
-            observed_from = None
-            if condition_symbol is not None:
-                if not session.elf.is_loaded:
-                    raise ValueError("ELF must be loaded before using condition_symbol")
-                resolved = session.elf.resolve_symbol(condition_symbol)
-                if resolved["address"] is None:
-                    raise ValueError(f"symbol '{condition_symbol}' could not be resolved")
-                symbol_address = int(resolved["address"], 16)
-                raw = session.probe.read_memory(symbol_address, 4)
-                observed_value = int.from_bytes(raw, "little")
-                observed_from = {"symbol": condition_symbol, "address": hex(symbol_address)}
-            elif condition_register is not None:
-                registers = session.probe.read_core_registers()
-                if condition_register not in registers:
-                    raise ValueError(f"register '{condition_register}' is not available")
-                observed_value = int(registers[condition_register])
-                observed_from = {"register": condition_register}
-
-            if condition_fn(observed_value, condition_value):
+            if not has_condition or _evaluate_condition(session, _cond):
                 session.probe.clear_breakpoint(target_address)
                 result.update(
                     {
@@ -1426,12 +1491,6 @@ def continue_until(
                         "condition_met": True,
                         "hit_count": hit_count,
                         "breakpoint_address": hex(target_address),
-                        "condition": {
-                            "op": condition_op,
-                            "expected": hex(condition_value),
-                            "actual": hex(observed_value),
-                            **(observed_from or {}),
-                        },
                     }
                 )
                 return result
