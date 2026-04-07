@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import mcudbg.backends.probe.jlink_backend as jlink_backend
-from mcudbg.tools.probe import read_cycle_counter, read_swo_log
+from mcudbg.tools.probe import read_cycle_counter, read_itm_trace, read_swo_log
 
 
 class _FakeJLink:
@@ -176,6 +176,48 @@ def test_read_swo_log_reports_unsupported_backend() -> None:
     session = SimpleNamespace(probe=SimpleNamespace())
 
     result = read_swo_log(session, cpu_speed_hz=72000000, swo_speed_hz=2000000)
+
+    assert result["status"] == "error"
+    assert "does not support" in result["summary"]
+
+
+def test_jlink_backend_read_itm_trace_reads_specific_port(monkeypatch) -> None:
+    fake = _FakeJLink()
+    monkeypatch.setattr(jlink_backend, "pylink", _fake_pylink_module(fake))
+    monkeypatch.setattr(jlink_backend, "pylink_library", _fake_library_module())
+    monkeypatch.setattr(
+        jlink_backend.JLinkProbeBackend,
+        "_resolve_dll_path",
+        classmethod(lambda cls, dll_path=None: dll_path or "E:/software/jlink/JLink_x64.dll"),
+    )
+
+    backend = jlink_backend.JLinkProbeBackend(dll_path="E:/software/jlink/JLink_x64.dll")
+    backend.connect(target="STM32F103C8")
+
+    result = backend.read_itm_trace(
+        cpu_speed_hz=72000000,
+        swo_speed_hz=2000000,
+        stimulus_port=2,
+        max_bytes=16,
+    )
+
+    assert result["status"] == "ok"
+    assert result["stimulus_port"] == 2
+    assert result["port_mask"] == 0x04
+    assert result["bytes_read"] == 10
+    assert result["text"] == "SWO hello\n"
+    assert fake.swo_enable_args == (72000000, 2000000, 0x04)
+
+
+def test_read_itm_trace_reports_unsupported_backend() -> None:
+    session = SimpleNamespace(probe=SimpleNamespace())
+
+    result = read_itm_trace(
+        session,
+        cpu_speed_hz=72000000,
+        swo_speed_hz=2000000,
+        stimulus_port=1,
+    )
 
     assert result["status"] == "error"
     assert "does not support" in result["summary"]

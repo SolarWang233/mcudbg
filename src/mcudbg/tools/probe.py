@@ -1446,6 +1446,39 @@ def read_swo_log(
         }
 
 
+def read_itm_trace(
+    session: SessionState,
+    cpu_speed_hz: int,
+    swo_speed_hz: int,
+    stimulus_port: int = 0,
+    max_bytes: int = 1024,
+    port_mask: int | None = None,
+) -> dict:
+    if not hasattr(session.probe, "read_itm_trace"):
+        return {
+            "status": "error",
+            "summary": "Active probe backend does not support ITM trace reads.",
+        }
+    try:
+        return session.probe.read_itm_trace(
+            cpu_speed_hz=cpu_speed_hz,
+            swo_speed_hz=swo_speed_hz,
+            stimulus_port=stimulus_port,
+            max_bytes=max_bytes,
+            port_mask=port_mask,
+        )
+    except NotImplementedError:
+        return {
+            "status": "error",
+            "summary": "Active probe backend does not support ITM trace reads.",
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "summary": str(e),
+        }
+
+
 _MPU_TYPE = 0xE000ED90
 _MPU_CTRL = 0xE000ED94
 _MPU_RNR = 0xE000ED98

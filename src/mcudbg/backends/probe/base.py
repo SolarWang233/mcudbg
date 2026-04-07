@@ -123,3 +123,13 @@ class ProbeBackend(ABC):
         port_mask: int = 0x01,
     ) -> dict[str, Any]:
         raise NotImplementedError
+
+    def read_itm_trace(
+        self,
+        cpu_speed_hz: int,
+        swo_speed_hz: int,
+        stimulus_port: int = 0,
+        max_bytes: int = 1024,
+        port_mask: int | None = None,
+    ) -> dict[str, Any]:
+        raise NotImplementedError

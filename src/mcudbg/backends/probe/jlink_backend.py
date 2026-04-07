@@ -523,10 +523,11 @@ class JLinkProbeBackend(ProbeBackend):
             if max_bytes <= 0:
                 raise ValueError("max_bytes must be greater than 0.")
 
-            requested_config = (cpu_speed_hz, swo_speed_hz, port_mask)
-            if (not self._jlink.swo_enabled()) or (self._swo_config != requested_config):
-                self._jlink.swo_enable(cpu_speed_hz, swo_speed_hz, port_mask=port_mask)
-                self._swo_config = requested_config
+            self._ensure_swo_config(
+                cpu_speed_hz=cpu_speed_hz,
+                swo_speed_hz=swo_speed_hz,
+                port_mask=port_mask,
+            )
 
             available = int(self._jlink.swo_num_bytes())
             to_read = min(max_bytes, max(available, 0))
@@ -549,7 +550,63 @@ class JLinkProbeBackend(ProbeBackend):
         except Exception as e:
             return {"status": "error", "summary": str(e)}
 
+    def read_itm_trace(
+        self,
+        cpu_speed_hz: int,
+        swo_speed_hz: int,
+        stimulus_port: int = 0,
+        max_bytes: int = 1024,
+        port_mask: int | None = None,
+    ) -> dict[str, Any]:
+        self._require_connected()
+        try:
+            if cpu_speed_hz <= 0:
+                raise ValueError("cpu_speed_hz must be greater than 0.")
+            if swo_speed_hz <= 0:
+                raise ValueError("swo_speed_hz must be greater than 0.")
+            if stimulus_port < 0:
+                raise ValueError("stimulus_port must be greater than or equal to 0.")
+            if max_bytes <= 0:
+                raise ValueError("max_bytes must be greater than 0.")
+
+            effective_port_mask = port_mask if port_mask is not None else (1 << stimulus_port)
+            self._ensure_swo_config(
+                cpu_speed_hz=cpu_speed_hz,
+                swo_speed_hz=swo_speed_hz,
+                port_mask=effective_port_mask,
+            )
+
+            available = int(self._jlink.swo_num_bytes())
+            to_read = min(max_bytes, max(available, 0))
+            raw = (
+                bytes(self._jlink.swo_read_stimulus(stimulus_port, to_read))
+                if to_read > 0
+                else b""
+            )
+            return {
+                "status": "ok",
+                "summary": (
+                    f"Read {len(raw)} byte(s) from ITM stimulus port {stimulus_port}."
+                ),
+                "backend": "jlink",
+                "cpu_speed_hz": cpu_speed_hz,
+                "swo_speed_hz": swo_speed_hz,
+                "stimulus_port": stimulus_port,
+                "port_mask": effective_port_mask,
+                "bytes_available": available,
+                "bytes_read": len(raw),
+                "text": raw.decode("utf-8", errors="replace"),
+            }
+        except Exception as e:
+            return {"status": "error", "summary": str(e)}
+
     # -- Helpers --
+
+    def _ensure_swo_config(self, cpu_speed_hz: int, swo_speed_hz: int, port_mask: int) -> None:
+        requested_config = (cpu_speed_hz, swo_speed_hz, port_mask)
+        if (not self._jlink.swo_enabled()) or (self._swo_config != requested_config):
+            self._jlink.swo_enable(cpu_speed_hz, swo_speed_hz, port_mask=port_mask)
+            self._swo_config = requested_config
 
     @classmethod
     def _default_dll_candidates(cls) -> list[str]:
